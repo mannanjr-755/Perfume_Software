@@ -1,0 +1,23 @@
+{
+  "name": "perfume-store",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Perfume Store — frontend + backend (MongoDB)",
+  "scripts": {
+    "predev": "node scripts/free-ports.js",
+    "dev": "concurrently -k -n backend,frontend -c cyan,magenta \"npm run dev --prefix backend\" \"npm run wait:api && npm run dev --prefix frontend\"",
+    "wait:api": "wait-on -t 60000 http-get://127.0.0.1:5000/api/health",
+    "dev:backend": "npm run predev && npm run dev --prefix backend",
+    "dev:frontend": "npm run wait:api && npm run dev --prefix frontend",
+    "start": "npm run predev && concurrently -k -n backend,frontend -c cyan,magenta \"npm run start --prefix backend\" \"npm run wait:api && npm run preview --prefix frontend\"",
+    "install:all": "npm install --prefix backend && npm install --prefix frontend && npm install",
+    "db:seed": "npm run db:seed --prefix backend",
+    "build": "npm run build --prefix frontend",
+    "ports:free": "node scripts/free-ports.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "wait-on": "^8.0.5"
+  }
+}

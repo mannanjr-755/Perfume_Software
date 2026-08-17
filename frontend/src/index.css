@@ -1,0 +1,304 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f6f5ff;
+  --surface: #ffffff;
+  --surface-soft: #f3f0ff;
+  --text: #1f1c3b;
+  --text-muted: #6b7280;
+  --border: #ece9fb;
+  --primary: #7c3aed;
+  --primary-hover: #6d28d9;
+  --ring: #c4b5fd;
+  --sidebar-bg: linear-gradient(180deg, #2b145d 0%, #1b0f3d 100%);
+  --sidebar-text: #e9ddff;
+  --sidebar-muted: #b39ad9;
+  --shadow-soft: 0 8px 30px rgba(39, 21, 94, 0.06);
+}
+
+.dark {
+  --bg: #130f24;
+  --surface: #1c1632;
+  --surface-soft: #271f46;
+  --text: #f4f1ff;
+  --text-muted: #a69cbe;
+  --border: #2d2550;
+  --primary: #a78bfa;
+  --primary-hover: #8b5cf6;
+  --ring: #8b5cf6;
+  --sidebar-bg: linear-gradient(180deg, #130f24 0%, #0d0a18 100%);
+  --sidebar-text: #f3ecff;
+  --sidebar-muted: #9f90bf;
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+.card-surface {
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.btn-primary {
+  @apply rounded-lg px-4 text-sm font-semibold text-white transition disabled:opacity-60;
+  height: 40px;
+  background: var(--primary);
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-secondary {
+  @apply rounded-lg px-4 text-sm font-semibold transition;
+  height: 40px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  background: var(--surface-soft);
+}
+
+.input-field {
+  @apply w-full rounded-lg px-3 text-sm outline-none transition;
+  height: 40px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+textarea.input-field {
+  height: auto;
+  min-height: 64px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  resize: vertical;
+}
+
+input[type='file'].input-field {
+  height: auto;
+  min-height: 40px;
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+  cursor: pointer;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.form-span-2 {
+  grid-column: 1 / -1;
+}
+
+.input-field::placeholder {
+  color: var(--text-muted);
+}
+
+.input-field:read-only {
+  background: var(--surface-soft);
+  cursor: default;
+}
+
+.divider-border {
+  border-color: var(--border);
+}
+
+.sidebar-shell {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+}
+
+.sidebar-item {
+  color: var(--sidebar-muted);
+}
+
+.sidebar-item-active {
+  background: rgba(124, 58, 237, 0.36);
+  color: #fff;
+}
+
+.panel-title {
+  color: var(--text);
+}
+
+.panel-muted {
+  color: var(--text-muted);
+}
+
+.brand-logo-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.brand-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.brand-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.brand-logo-frame {
+  width: 64px;
+  height: 64px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.brand-logo-frame .brand-logo {
+  width: 56px;
+  height: 56px;
+}
+
+.brand-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.brand-name {
+  font-family: "Playfair Display", Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  font-size: 24px;
+  line-height: 1.1;
+  letter-spacing: 0.2px;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brand-subtitle {
+  margin-top: 5px;
+  font-family: "Poppins", "Inter", "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #d6b066;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1023.98px) {
+  .brand-identity {
+    gap: 12px;
+  }
+
+  .brand-logo-frame {
+    width: 52px;
+    height: 52px;
+    padding: 3px;
+  }
+
+  .brand-logo-frame .brand-logo {
+    width: 44px;
+    height: 44px;
+  }
+
+  .brand-name {
+    font-size: 20px;
+  }
+
+  .brand-subtitle {
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+}
+
+.product-image-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  flex-shrink: 0;
+}
+
+.product-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+@keyframes barcode-ready-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.08);
+  }
+}
+
+.barcode-ready {
+  animation: barcode-ready-pulse 2s ease-in-out infinite;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--surface-soft);
+  border-top-color: var(--primary);
+  border-radius: 9999px;
+  animation: spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
