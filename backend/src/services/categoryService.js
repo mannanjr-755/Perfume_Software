@@ -1,36 +1,36 @@
-import Category from '../models/Category.js';
-import Product from '../models/Product.js';
 import { createCrudService } from './crudService.js';
 import { AppError } from '../utils/AppError.js';
+import { query } from '../config/database.js';
 
-const base = createCrudService(Category, { searchFields: ['name', 'description'] });
+const base = createCrudService('categories', { searchFields: ['name', 'description'] });
 
 async function withCounts(items) {
   const names = items.map((item) => item.name);
-  const counts = await Product.aggregate([
-    { $match: { category: { $in: names } } },
-    { $group: { _id: '$category', count: { $sum: 1 } } },
-  ]);
-  const map = Object.fromEntries(counts.map((row) => [row._id, row.count]));
+  if (!names.length) return items;
+  const res = await query(
+    'SELECT category AS name, COUNT(*) AS count FROM products WHERE category = ANY($1) GROUP BY category',
+    [names]
+  );
+  const map = new Map(res.rows.map((row) => [row.name, Number(row.count)]));
   return items.map((item) => ({
     ...item,
-    productCount: map[item.name] || 0,
+    productCount: map.get(item.name) || 0,
   }));
 }
 
 export const categoryService = {
-  async list(query = {}) {
-    const result = await base.list(query);
-    const items = await withCounts(result.items.map((item) => item.toObject()));
+  async list(queryParams = {}) {
+    const result = await base.list(queryParams);
+    const items = await withCounts(result.items);
     return { ...result, items };
   },
   getById: base.getById,
   create: base.create,
   update: base.update,
   async delete(id) {
-    const category = await Category.findById(id);
-    if (!category) throw new AppError('Record not found', 404);
-    const count = await Product.countDocuments({ category: category.name });
+    const category = await base.getById(id);
+    const res = await query('SELECT COUNT(*) AS count FROM products WHERE category = $1', [category.name]);
+    const count = Number(res.rows[0].count || 0);
     if (count > 0) {
       throw new AppError(
         `Cannot delete "${category.name}" because ${count} product${count === 1 ? '' : 's'} use it. Reassign those products first.`,

@@ -1,7 +1,4 @@
 import { Router } from 'express';
-import Customer from '../models/Customer.js';
-import Notification from '../models/Notification.js';
-import Settings from '../models/Settings.js';
 import { createCrudService } from '../services/crudService.js';
 import { createCrudController } from '../controllers/crudController.js';
 import { productService } from '../services/productService.js';
@@ -13,6 +10,8 @@ import { searchAll } from '../services/searchService.js';
 import * as dashboardController from '../controllers/dashboardController.js';
 import { success } from '../utils/apiResponse.js';
 import { AppError } from '../utils/AppError.js';
+import { query } from '../config/database.js';
+import { rowToDoc, buildInsert, buildUpdate } from '../db/columns.js';
 
 const router = Router();
 
@@ -79,7 +78,7 @@ router.post('/products/:id/generate-barcode', async (req, res, next) => {
   }
 });
 
-const notificationService = createCrudService(Notification, { searchFields: ['title', 'message'] });
+const notificationService = createCrudService('notifications', { searchFields: ['title', 'message'] });
 const notificationController = createCrudController(notificationService, 'notifications');
 
 router.get('/notifications', notificationController.list);
@@ -90,13 +89,14 @@ router.delete('/notifications/:id', notificationController.remove);
 
 router.put('/notifications/:id/read', async (req, res, next) => {
   try {
-    const notification = await Notification.findByIdAndUpdate(
-      req.params.id,
-      { read: true },
-      { new: true, runValidators: true }
+    const num = Number(req.params.id);
+    if (!Number.isInteger(num) || num <= 0) throw new AppError('Record not found', 404);
+    const result = await query(
+      'UPDATE notifications SET read = TRUE, updated_at = now() WHERE id = $1 RETURNING *',
+      [num]
     );
-    if (!notification) throw new AppError('Record not found', 404);
-    return success(res, 'Notification marked as read', notification);
+    if (!result.rows[0]) throw new AppError('Record not found', 404);
+    return success(res, 'Notification marked as read', rowToDoc(result.rows[0]));
   } catch (error) {
     next(error);
   }
@@ -104,8 +104,8 @@ router.put('/notifications/:id/read', async (req, res, next) => {
 
 router.post('/notifications/read-all', async (_req, res, next) => {
   try {
-    const result = await Notification.updateMany({}, { read: true });
-    return success(res, 'All notifications marked as read', { modified: result.modifiedCount });
+    const result = await query('UPDATE notifications SET read = TRUE, updated_at = now()');
+    return success(res, 'All notifications marked as read', { modified: result.rowCount });
   } catch (error) {
     next(error);
   }
@@ -113,8 +113,8 @@ router.post('/notifications/read-all', async (_req, res, next) => {
 
 router.delete('/notifications', async (_req, res, next) => {
   try {
-    const result = await Notification.deleteMany({});
-    return success(res, 'All notifications cleared', { deleted: result.deletedCount });
+    const result = await query('DELETE FROM notifications');
+    return success(res, 'All notifications cleared', { deleted: result.rowCount });
   } catch (error) {
     next(error);
   }
@@ -122,17 +122,28 @@ router.delete('/notifications', async (_req, res, next) => {
 
 router.get('/settings', async (_req, res, next) => {
   try {
-    let settings = await Settings.findOne();
-    if (!settings) settings = await Settings.create({ currency: 'PKR' });
-    if (settings.currency !== 'PKR') {
-      settings.currency = 'PKR';
-      await settings.save();
+    let settings = await query('SELECT * FROM settings ORDER BY id LIMIT 1');
+    if (!settings.rows[0]) {
+      settings = await query(
+        `INSERT INTO settings (currency) VALUES ('PKR') RETURNING *`
+      );
     }
-    if (!settings.orderPrefix) {
-      settings.orderPrefix = 'PFM-';
-      await settings.save();
+    let doc = rowToDoc(settings.rows[0]);
+    if (doc.currency !== 'PKR') {
+      const updated = await query(
+        'UPDATE settings SET currency = $1, updated_at = now() WHERE id = $2 RETURNING *',
+        ['PKR', Number(doc._id)]
+      );
+      doc = rowToDoc(updated.rows[0]);
     }
-    return success(res, 'Settings fetched', settings);
+    if (!doc.orderPrefix) {
+      const updated = await query(
+        'UPDATE settings SET order_prefix = $1, updated_at = now() WHERE id = $2 RETURNING *',
+        ['PFM-', Number(doc._id)]
+      );
+      doc = rowToDoc(updated.rows[0]);
+    }
+    return success(res, 'Settings fetched', doc);
   } catch (error) {
     next(error);
   }
@@ -141,13 +152,25 @@ router.get('/settings', async (_req, res, next) => {
 router.put('/settings', async (req, res, next) => {
   try {
     const payload = { ...req.body, currency: 'PKR' };
-    let settings = await Settings.findOne();
-    if (!settings) settings = await Settings.create(payload);
-    else {
-      Object.assign(settings, payload);
-      await settings.save();
+    let settings = await query('SELECT * FROM settings ORDER BY id LIMIT 1');
+    if (!settings.rows[0]) {
+      const { columns, values } = buildInsert('settings', payload);
+      const inserted = await query(
+        `INSERT INTO settings (${columns.join(', ')}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING *`,
+        values
+      );
+      return success(res, 'Settings updated', rowToDoc(inserted.rows[0]));
     }
-    return success(res, 'Settings updated', settings);
+    const { sets, values } = buildUpdate('settings', payload);
+    const id = Number(settings.rows[0].id);
+    if (!sets.length) {
+      return success(res, 'Settings updated', rowToDoc(settings.rows[0]));
+    }
+    const updated = await query(
+      `UPDATE settings SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length + 1} RETURNING *`,
+      [...values, id]
+    );
+    return success(res, 'Settings updated', rowToDoc(updated.rows[0]));
   } catch (error) {
     next(error);
   }

@@ -1,14 +1,15 @@
-import Product from '../models/Product.js';
 import { createCrudService } from './crudService.js';
 import { AppError } from '../utils/AppError.js';
+import { query } from '../config/database.js';
+import { rowToDoc } from '../db/columns.js';
 import { normalizeBarcode, isValidBarcode, generateBarcode } from '../utils/barcode.js';
 
-const base = createCrudService(Product, {
+const base = createCrudService('products', {
   searchFields: ['name', 'brand', 'category', 'barcode', 'sku'],
 });
 
 function isDuplicateKeyError(error) {
-  return error?.code === 11000 || (error?.name === 'MongoServerError' && error?.code === 11000);
+  return error?.code === '23505';
 }
 
 function normalizeSku(input) {
@@ -19,10 +20,14 @@ function normalizeSku(input) {
 
 async function ensureUnique(field, value, excludeId, label) {
   if (!value) return undefined;
-  const query = { [field]: value };
-  if (excludeId) query._id = { $ne: excludeId };
-  const existing = await Product.findOne(query).select('_id');
-  if (existing) throw new AppError(`A product with ${label} "${value}" already exists`, 400);
+  const params = [value];
+  let sql = `SELECT id FROM products WHERE ${field} = $1`;
+  if (excludeId) {
+    params.push(Number(excludeId));
+    sql += ` AND id <> $2`;
+  }
+  const existing = await query(sql, params);
+  if (existing.rows.length) throw new AppError(`A product with ${label} "${value}" already exists`, 400);
   return value;
 }
 
@@ -55,8 +60,7 @@ async function create(data) {
     return await base.create(payload);
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      const field = error.keyPattern?.barcode ? 'barcode' : error.keyPattern?.sku ? 'SKU' : 'value';
-      throw new AppError(`A product with this ${field} already exists`, 400);
+      throw new AppError('A product with this barcode/SKU already exists', 400);
     }
     throw error;
   }
@@ -70,8 +74,7 @@ async function update(id, data) {
     return await base.update(id, payload);
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      const field = error.keyPattern?.barcode ? 'barcode' : error.keyPattern?.sku ? 'SKU' : 'value';
-      throw new AppError(`A product with this ${field} already exists`, 400);
+      throw new AppError('A product with this barcode/SKU already exists', 400);
     }
     throw error;
   }
@@ -80,24 +83,23 @@ async function update(id, data) {
 async function findByBarcode(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) throw new AppError('Barcode cannot be empty', 400);
-  const product = await Product.findOne({ barcode: code });
-  if (!product) throw new AppError('No product found with this barcode', 404);
-  return product;
+  const res = await query('SELECT * FROM products WHERE barcode = $1', [code]);
+  if (!res.rows[0]) throw new AppError('No product found with this barcode', 404);
+  return rowToDoc(res.rows[0]);
 }
 
 async function nextBarcode() {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const code = generateBarcode();
-    const existing = await Product.findOne({ barcode: code }).select('_id');
-    if (!existing) return code;
+    const existing = await query('SELECT id FROM products WHERE barcode = $1', [code]);
+    if (!existing.rows.length) return code;
   }
   throw new AppError('Could not generate a unique barcode, please try again', 500);
 }
 
 async function assignBarcode(id) {
   const code = await nextBarcode();
-  const product = await base.update(id, { barcode: code });
-  return product;
+  return base.update(id, { barcode: code });
 }
 
 export const productService = {

@@ -12,7 +12,10 @@ dotenv.config({ path: backendEnv });
 const env = {
   port: Number(process.env.PORT) || 5000,
   nodeEnv: process.env.NODE_ENV || 'development',
-  mongodbUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/perfume_store',
+  databaseUrl:
+    process.env.DATABASE_URL ||
+    process.env.MONGODB_URI ||
+    'postgresql://127.0.0.1:27017/perfume_store',
   clientUrl: process.env.CLIENT_URL || 'http://127.0.0.1:5173',
 };
 

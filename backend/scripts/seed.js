@@ -1,30 +1,39 @@
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Product from '../src/models/Product.js';
-import Category from '../src/models/Category.js';
-import Brand from '../src/models/Brand.js';
-import Customer from '../src/models/Customer.js';
-import Settings from '../src/models/Settings.js';
+import { connectDatabase, disconnectDatabase, query } from '../src/config/database.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/perfume_store';
+async function upsertByName(table, items) {
+  for (const item of items) {
+    const existing = await query(`SELECT id FROM ${table} WHERE name = $1`, [item.name]);
+    if (existing.rows[0]) {
+      await query(
+        `UPDATE ${table} SET description = $1, status = $2, updated_at = now() WHERE id = $3`,
+        [item.description || '', item.status || 'active', existing.rows[0].id]
+      );
+    } else {
+      await query(`INSERT INTO ${table} (name, description, status) VALUES ($1, $2, $3)`, [
+        item.name,
+        item.description || '',
+        item.status || 'active',
+      ]);
+    }
+  }
+}
 
 async function seed() {
-  await mongoose.connect(MONGODB_URI);
-  console.log('[Seed] Connected to MongoDB');
+  await connectDatabase();
+  console.log('[Seed] Connected to database');
 
   const categories = [
     { name: 'Eau de Parfum', description: 'Long-lasting fragrance' },
     { name: 'Eau de Toilette', description: 'Light daily wear' },
     { name: 'Cologne', description: 'Fresh and subtle' },
   ];
-  for (const item of categories) {
-    await Category.findOneAndUpdate({ name: item.name }, { $set: item }, { upsert: true, new: true });
-  }
+  await upsertByName('categories', categories);
   console.log('[Seed] Categories synced');
 
   const brands = [
@@ -32,9 +41,7 @@ async function seed() {
     { name: 'Dior', description: 'Parisian elegance' },
     { name: 'Tom Ford', description: 'Modern luxury' },
   ];
-  for (const item of brands) {
-    await Brand.findOneAndUpdate({ name: item.name }, { $set: item }, { upsert: true, new: true });
-  }
+  await upsertByName('brands', brands);
   console.log('[Seed] Brands synced');
 
   const catalog = [
@@ -95,43 +102,69 @@ async function seed() {
     },
   ];
 
-  await Product.init();
-
   for (const item of catalog) {
-    await Product.findOneAndUpdate(
-      { name: item.name },
-      { $set: item },
-      { upsert: true, new: true }
-    );
+    const existing = await query('SELECT id FROM products WHERE name = $1', [item.name]);
+    if (existing.rows[0]) {
+      await query(
+        `UPDATE products SET
+           brand = $1, category = $2, price = $3, stock = $4, description = $5,
+           image = $6, barcode = $7, status = $8, updated_at = now()
+         WHERE id = $9`,
+        [
+          item.brand,
+          item.category,
+          item.price,
+          item.stock,
+          item.description,
+          item.image,
+          item.barcode,
+          item.status,
+          existing.rows[0].id,
+        ]
+      );
+    } else {
+      await query(
+        `INSERT INTO products (name, brand, category, price, stock, description, image, barcode, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          item.name,
+          item.brand,
+          item.category,
+          item.price,
+          item.stock,
+          item.description,
+          item.image,
+          item.barcode,
+          item.status,
+        ]
+      );
+    }
   }
-  await Product.updateMany(
-    { $or: [{ image: { $exists: false } }, { image: '' }, { image: null }] },
-    { $set: { image: '/products/default.png' } }
-  );
+  await query(`UPDATE products SET image = '/products/default.png' WHERE image IS NULL OR image = ''`);
   console.log('[Seed] Products synced with catalog images');
 
-  if (await Customer.countDocuments() === 0) {
-    await Customer.insertMany([
-      { name: 'John Smith', email: 'john@example.com', phone: '+1234567890', city: 'New York' },
-      { name: 'Sarah Lee', email: 'sarah@example.com', phone: '+1987654321', city: 'London' },
-    ]);
+  const customersRes = await query('SELECT COUNT(*) AS count FROM customers');
+  if (Number(customersRes.rows[0].count) === 0) {
+    await query(
+      `INSERT INTO customers (name, email, phone, city) VALUES ($1, $2, $3, $4), ($5, $6, $7, $8)`,
+      ['John Smith', 'john@example.com', '+1234567890', 'New York', 'Sarah Lee', 'sarah@example.com', '+1987654321', 'London']
+    );
     console.log('[Seed] Sample customers created');
   }
 
-  if (!await Settings.findOne()) {
-    await Settings.create({
-      storeName: 'Scent Yours',
-      storeEmail: 'hello@scentyours.com',
-      currency: 'PKR',
-      taxRate: 5,
-      orderPrefix: 'PFM-',
-    });
+  const settingsRes = await query('SELECT id FROM settings ORDER BY id LIMIT 1');
+  if (!settingsRes.rows[0]) {
+    await query(
+      `INSERT INTO settings (store_name, store_email, currency, tax_rate, order_prefix)
+       VALUES ($1, $2, $3, $4, $5)`,
+      ['Scent Yours', 'hello@scentyours.com', 'PKR', 5, 'PFM-']
+    );
     console.log('[Seed] Settings initialized');
   } else {
-    await Settings.updateMany({ currency: { $ne: 'PKR' } }, { $set: { currency: 'PKR' } });
+    await query(`UPDATE settings SET currency = 'PKR', updated_at = now() WHERE currency <> 'PKR'`);
   }
 
-  await mongoose.disconnect();
+  await disconnectDatabase();
   console.log('[Seed] Done');
 }
 

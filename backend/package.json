@@ -14,8 +14,8 @@
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
-    "mongoose": "^8.9.3",
     "multer": "^2.0.0",
-    "perfume-store": "file:.."
+    "perfume-store": "file:..",
+    "pg": "^8.23.0"
   }
 }

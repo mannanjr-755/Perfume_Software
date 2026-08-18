@@ -1,35 +1,35 @@
-import Product from '../models/Product.js';
-import Order from '../models/Order.js';
-import Customer from '../models/Customer.js';
-import Category from '../models/Category.js';
-import Brand from '../models/Brand.js';
-import { escapeRegex } from '../utils/escapeRegex.js';
+import { query } from '../config/database.js';
+import { rowToDoc } from '../db/columns.js';
+import { camelToSnake } from '../db/columns.js';
 
 const DEFAULT_LIMIT = 8;
 
-function searchFilter(query, fields) {
-  if (!query) return {};
-  const regex = new RegExp(escapeRegex(query), 'i');
-  return { $or: fields.map((field) => ({ [field]: regex })) };
+function escapeLike(value) {
+  return String(value).replace(/[%_\\]/g, (c) => `\\${c}`);
 }
 
-async function searchCollection(Model, query, fields, limit = DEFAULT_LIMIT) {
-  const filter = searchFilter(query, fields);
-  return Model.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
+async function searchTable(table, q, fields, limit = DEFAULT_LIMIT) {
+  const columns = fields.map(camelToSnake);
+  const ors = columns.map((field) => `${field} ILIKE $1`);
+  const res = await query(
+    `SELECT * FROM ${table} WHERE (${ors.join(' OR ')}) ORDER BY created_at DESC LIMIT $2`,
+    [`%${escapeLike(q)}%`, limit]
+  );
+  return res.rows.map(rowToDoc);
 }
 
-export async function searchAll(query) {
-  const q = String(query || '').trim();
+export async function searchAll(queryStr) {
+  const q = String(queryStr || '').trim();
   if (!q) {
     return { products: [], orders: [], customers: [], categories: [], brands: [] };
   }
 
   const [products, orders, customers, categories, brands] = await Promise.all([
-    searchCollection(Product, q, ['name', 'brand', 'category', 'barcode', 'sku']),
-    searchCollection(Order, q, ['orderNumber', 'customerName', 'customerEmail', 'customerPhone']),
-    searchCollection(Customer, q, ['name', 'email', 'phone', 'city']),
-    searchCollection(Category, q, ['name', 'description']),
-    searchCollection(Brand, q, ['name', 'description']),
+    searchTable('products', q, ['name', 'brand', 'category', 'barcode', 'sku']),
+    searchTable('orders', q, ['orderNumber', 'customerName', 'customerEmail', 'customerPhone']),
+    searchTable('customers', q, ['name', 'email', 'phone', 'city']),
+    searchTable('categories', q, ['name', 'description']),
+    searchTable('brands', q, ['name', 'description']),
   ]);
 
   return { products, orders, customers, categories, brands };

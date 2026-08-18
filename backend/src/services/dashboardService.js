@@ -1,8 +1,5 @@
-import Product from '../models/Product.js';
-import Order from '../models/Order.js';
-import Customer from '../models/Customer.js';
-import Notification from '../models/Notification.js';
-import Settings from '../models/Settings.js';
+import { query } from '../config/database.js';
+import { rowToDoc } from '../db/columns.js';
 import { DEFAULT_LOW_STOCK_THRESHOLD } from './orderService.js';
 
 function computeRange(range) {
@@ -18,7 +15,13 @@ function computeRange(range) {
 }
 
 async function getSettings() {
-  return Settings.findOne().select('lowStockThreshold storeName').lean();
+  const res = await query('SELECT low_stock_threshold, store_name FROM settings ORDER BY id LIMIT 1');
+  return res.rows[0]
+    ? {
+        lowStockThreshold: res.rows[0].low_stock_threshold,
+        storeName: res.rows[0].store_name,
+      }
+    : null;
 }
 
 function bucketKey(date, range) {
@@ -32,53 +35,78 @@ export async function getDashboardStats({ range = '7d' } = {}) {
   const settings = await getSettings();
   const threshold = Number(settings?.lowStockThreshold) ?? DEFAULT_LOW_STOCK_THRESHOLD;
 
-  const [products, orders, customers, revenueAgg, pendingOrders, notifications, lowStockCount, outOfStockCount] =
+  const [counts, revenueRes, pendingRes, notificationsRes, lowStockRes, outOfStockRes] =
     await Promise.all([
-      Product.countDocuments(),
-      Order.countDocuments(),
-      Customer.countDocuments(),
-      Order.aggregate([
-        { $match: { status: { $ne: 'cancelled' } } },
-        { $group: { _id: null, total: { $sum: '$total' } } },
-      ]),
-      Order.countDocuments({ status: 'pending' }),
-      Notification.countDocuments({ read: false }),
-      Product.countDocuments({ status: 'active', stock: { $lte: threshold, $gt: 0 } }),
-      Product.countDocuments({ status: 'active', stock: 0 }),
+      query(
+        `SELECT
+           (SELECT COUNT(*) FROM products) AS products,
+           (SELECT COUNT(*) FROM orders) AS orders,
+           (SELECT COUNT(*) FROM customers) AS customers`
+      ),
+      query(`SELECT COALESCE(SUM(total), 0) AS total FROM orders WHERE status <> 'cancelled'`),
+      query(`SELECT COUNT(*) AS count FROM orders WHERE status = 'pending'`),
+      query(`SELECT COUNT(*) AS count FROM notifications WHERE read = FALSE`),
+      query(
+        `SELECT COUNT(*) AS count FROM products WHERE status = 'active' AND stock > 0 AND stock <= $1`,
+        [threshold]
+      ),
+      query(`SELECT COUNT(*) AS count FROM products WHERE status = 'active' AND stock = 0`),
     ]);
 
-  const revenue = revenueAgg[0]?.total || 0;
-
-  const [recentOrders, recentProducts, bestSellers, rangeOrders, topCategoriesAgg] =
+  const [recentOrdersRes, recentProductsRes, bestSellersRes, rangeOrdersRes, topCategoriesRes] =
     await Promise.all([
-      Order.find().sort({ createdAt: -1 }).limit(8),
-      Product.find().sort({ createdAt: -1 }).limit(8),
-      Order.aggregate([
-        { $unwind: '$items' },
-        { $match: { status: { $ne: 'cancelled' } } },
-        {
-          $group: {
-            _id: '$items.productId',
-            name: { $first: '$items.productName' },
-            image: { $first: '$items.image' },
-            brand: { $first: '$items.brand' },
-            sold: { $sum: '$items.quantity' },
-            revenue: { $sum: { $multiply: ['$items.quantity', '$items.price'] } },
-          },
-        },
-        { $sort: { sold: -1 } },
-        { $limit: 5 },
-      ]),
-      Order.find({ status: { $ne: 'cancelled' }, createdAt: { $gte: start } }).sort({ createdAt: 1 }),
-      Order.aggregate([
-        { $match: { status: { $ne: 'cancelled' }, createdAt: { $gte: start } } },
-        { $unwind: '$items' },
-        { $group: { _id: '$items.category', count: { $sum: '$items.quantity' } } },
-        { $sort: { count: -1 } },
-        { $limit: 5 },
-      ]),
+      query('SELECT * FROM orders ORDER BY created_at DESC LIMIT 8'),
+      query('SELECT * FROM products ORDER BY created_at DESC LIMIT 8'),
+      query(
+        `SELECT
+           (item->>'productId') AS product_id,
+           MIN(item->>'productName') AS name,
+           MIN(item->>'image') AS image,
+           MIN(item->>'brand') AS brand,
+           SUM((item->>'quantity')::numeric) AS sold,
+           SUM((item->>'quantity')::numeric * (item->>'price')::numeric) AS revenue
+         FROM orders, jsonb_array_elements(items) AS item
+         WHERE status <> 'cancelled'
+         GROUP BY item->>'productId'
+         ORDER BY sold DESC
+         LIMIT 5`
+      ),
+      query(`SELECT * FROM orders WHERE status <> 'cancelled' AND created_at >= $1 ORDER BY created_at`, [start]),
+      query(
+        `SELECT
+           (item->>'category') AS category,
+           SUM((item->>'quantity')::numeric) AS count
+         FROM orders, jsonb_array_elements(items) AS item
+         WHERE status <> 'cancelled' AND created_at >= $1
+         GROUP BY item->>'category'
+         ORDER BY count DESC
+         LIMIT 5`,
+        [start]
+      ),
     ]);
 
+  const products = Number(counts.rows[0].products);
+  const orders = Number(counts.rows[0].orders);
+  const customers = Number(counts.rows[0].customers);
+  const revenue = Number(revenueRes.rows[0].total || 0);
+  const pendingOrders = Number(pendingRes.rows[0].count);
+  const notifications = Number(notificationsRes.rows[0].count);
+  const lowStockCount = Number(lowStockRes.rows[0].count);
+  const outOfStockCount = Number(outOfStockRes.rows[0].count);
+
+  const recentOrders = recentOrdersRes.rows.map(rowToDoc);
+  const recentProducts = recentProductsRes.rows.map(rowToDoc);
+
+  const bestSellers = bestSellersRes.rows.map((row) => ({
+    _id: row.product_id,
+    name: row.name,
+    image: row.image,
+    brand: row.brand,
+    sold: Number(row.sold),
+    revenue: Number(row.revenue),
+  }));
+
+  const rangeOrders = rangeOrdersRes.rows.map(rowToDoc);
   const rangeRevenue = rangeOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
 
   const salesByDate = {};
@@ -90,6 +118,11 @@ export async function getDashboardStats({ range = '7d' } = {}) {
   const salesOverview = Object.entries(salesByDate)
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([date, total]) => ({ date, total }));
+
+  const topCategories = topCategoriesRes.rows.map((row) => ({
+    name: row.category || 'Uncategorized',
+    count: Number(row.count),
+  }));
 
   return {
     stats: {
@@ -108,85 +141,81 @@ export async function getDashboardStats({ range = '7d' } = {}) {
     recentOrders,
     recentProducts,
     bestSellers,
-    topCategories: topCategoriesAgg.map((row) => ({ name: row._id || 'Uncategorized', count: row.count })),
+    topCategories,
     salesOverview,
     range,
   };
 }
 
-export async function getReports(query = {}) {
-  const { from, to } = query;
-  const filter = {};
-  if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to) {
-      const end = new Date(to);
-      end.setHours(23, 59, 59, 999);
-      filter.createdAt.$lte = end;
-    }
+export async function getReports(queryParams = {}) {
+  const { from, to } = queryParams;
+  const where = [];
+  const params = [];
+  if (from) {
+    params.push(new Date(from));
+    where.push(`created_at >= $${params.length}`);
   }
+  if (to) {
+    const end = new Date(to);
+    end.setHours(23, 59, 59, 999);
+    params.push(end);
+    where.push(`created_at <= $${params.length}`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const filterParams = [...params];
+  const params2 = [...params];
 
-  const [orders, bestSellers, byCategory, byBrand, byDateAgg] = await Promise.all([
-    Order.find(filter).sort({ createdAt: -1 }),
-    Order.aggregate([
-      { $match: filter },
-      { $unwind: '$items' },
-      { $match: { status: { $ne: 'cancelled' } } },
-      {
-        $group: {
-          _id: '$items.productId',
-          name: { $first: '$items.productName' },
-          image: { $first: '$items.image' },
-          brand: { $first: '$items.brand' },
-          category: { $first: '$items.category' },
-          sold: { $sum: '$items.quantity' },
-          revenue: { $sum: { $multiply: ['$items.quantity', '$items.price'] } },
-        },
-      },
-      { $sort: { sold: -1 } },
-      { $limit: 10 },
-    ]),
-    Order.aggregate([
-      { $match: filter },
-      { $unwind: '$items' },
-      { $match: { status: { $ne: 'cancelled' } } },
-      {
-        $group: {
-          _id: '$items.category',
-          count: { $sum: '$items.quantity' },
-          revenue: { $sum: { $multiply: ['$items.quantity', '$items.price'] } },
-        },
-      },
-      { $sort: { count: -1 } },
-    ]),
-    Order.aggregate([
-      { $match: filter },
-      { $unwind: '$items' },
-      { $match: { status: { $ne: 'cancelled' } } },
-      {
-        $group: {
-          _id: '$items.brand',
-          count: { $sum: '$items.quantity' },
-          revenue: { $sum: { $multiply: ['$items.quantity', '$items.price'] } },
-        },
-      },
-      { $sort: { count: -1 } },
-    ]),
-    Order.aggregate([
-      { $match: filter },
-      { $match: { status: { $ne: 'cancelled' } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          revenue: { $sum: '$total' },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]),
+  const [ordersRes, bestSellersRes, byCategoryRes, byBrandRes, byDateRes] = await Promise.all([
+    query(`SELECT * FROM orders ${whereSql} ORDER BY created_at DESC`, filterParams),
+    query(
+      `SELECT
+         (item->>'productId') AS product_id,
+         MIN(item->>'productName') AS name,
+         MIN(item->>'image') AS image,
+         MIN(item->>'brand') AS brand,
+         MIN(item->>'category') AS category,
+         SUM((item->>'quantity')::numeric) AS sold,
+         SUM((item->>'quantity')::numeric * (item->>'price')::numeric) AS revenue
+       FROM orders, jsonb_array_elements(items) AS item
+       WHERE status <> 'cancelled'${whereSql.replace(/^WHERE/, ' AND')}
+       GROUP BY item->>'productId'
+       ORDER BY sold DESC
+       LIMIT 10`,
+      params
+    ),
+    query(
+      `SELECT
+         (item->>'category') AS category,
+         SUM((item->>'quantity')::numeric) AS count,
+         SUM((item->>'quantity')::numeric * (item->>'price')::numeric) AS revenue
+       FROM orders, jsonb_array_elements(items) AS item
+       WHERE status <> 'cancelled'${whereSql.replace(/^WHERE/, ' AND')}
+       GROUP BY item->>'category'
+       ORDER BY count DESC`,
+      params2
+    ),
+    query(
+      `SELECT
+         (item->>'brand') AS brand,
+         SUM((item->>'quantity')::numeric) AS count,
+         SUM((item->>'quantity')::numeric * (item->>'price')::numeric) AS revenue
+       FROM orders, jsonb_array_elements(items) AS item
+       WHERE status <> 'cancelled'${whereSql.replace(/^WHERE/, ' AND')}
+       GROUP BY item->>'brand'
+       ORDER BY count DESC`,
+      params2
+    ),
+    query(
+      `SELECT to_char(created_at, 'YYYY-MM-DD') AS date, SUM(total) AS revenue, COUNT(*) AS count
+       FROM orders
+       WHERE status <> 'cancelled'${whereSql.replace(/^WHERE/, ' AND')}
+       GROUP BY to_char(created_at, 'YYYY-MM-DD')
+       ORDER BY date`,
+      params2
+    ),
   ]);
 
+  const orders = ordersRes.rows.map(rowToDoc);
   const totalRevenue = orders.reduce((sum, o) => sum + (o.status !== 'cancelled' ? Number(o.total || 0) : 0), 0);
 
   return {
@@ -200,9 +229,29 @@ export async function getReports(query = {}) {
       processing: orders.filter((o) => o.status === 'processing').length,
       shipped: orders.filter((o) => o.status === 'shipped').length,
     },
-    bestSellers,
-    byCategory: byCategory.map((row) => ({ name: row._id || 'Uncategorized', count: row.count, revenue: row.revenue })),
-    byBrand: byBrand.map((row) => ({ name: row._id || 'Unknown', count: row.count, revenue: row.revenue })),
-    salesByDate: byDateAgg.map((row) => ({ date: row._id, revenue: row.revenue, count: row.count })),
+    bestSellers: bestSellersRes.rows.map((row) => ({
+      _id: row.product_id,
+      name: row.name,
+      image: row.image,
+      brand: row.brand,
+      category: row.category,
+      sold: Number(row.sold),
+      revenue: Number(row.revenue),
+    })),
+    byCategory: byCategoryRes.rows.map((row) => ({
+      name: row.category || 'Uncategorized',
+      count: Number(row.count),
+      revenue: Number(row.revenue),
+    })),
+    byBrand: byBrandRes.rows.map((row) => ({
+      name: row.brand || 'Unknown',
+      count: Number(row.count),
+      revenue: Number(row.revenue),
+    })),
+    salesByDate: byDateRes.rows.map((row) => ({
+      date: row.date,
+      revenue: Number(row.revenue),
+      count: Number(row.count),
+    })),
   };
 }

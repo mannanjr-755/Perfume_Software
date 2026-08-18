@@ -9,3 +9,6 @@ coverage/
 .vscode/
 .idea/
 backend/uploads/
+
+.vercel
+.env*

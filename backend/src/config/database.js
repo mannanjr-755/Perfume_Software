@@ -1,27 +1,51 @@
-import mongoose from 'mongoose';
+import pg from 'pg';
 import env from './env.js';
+import { initSchema } from '../db/schema.js';
 
-let isConnected = false;
+const { Pool } = pg;
+
+let pool = null;
+let schemaReady = false;
+
+function registerTypeParsers() {
+  pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+  pg.types.setTypeParser(23, (v) => (v === null ? null : Number(v)));
+  pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
+  pg.types.setTypeParser(1114, (v) => (v === null ? null : new Date(v)));
+  pg.types.setTypeParser(1184, (v) => (v === null ? null : new Date(v)));
+}
 
 export async function connectDatabase() {
-  if (mongoose.connection.readyState === 1) return mongoose.connection;
+  if (pool) return pool;
 
-  mongoose.set('strictQuery', true);
+  registerTypeParsers();
+  pool = new Pool({
+    connectionString: env.databaseUrl,
+    max: 5,
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 30000,
+  });
 
-  await mongoose.connect(env.mongodbUri);
-  isConnected = true;
+  await pool.query('SELECT 1');
+  if (!schemaReady) {
+    await initSchema(pool);
+    schemaReady = true;
+  }
+  return pool;
+}
 
-  return mongoose.connection;
+export async function query(text, params) {
+  if (!pool) await connectDatabase();
+  return pool.query(text, params);
 }
 
 export async function disconnectDatabase() {
-  if (!isConnected) return;
-  await mongoose.disconnect();
-  isConnected = false;
+  if (!pool) return;
+  await pool.end();
+  pool = null;
+  schemaReady = false;
 }
 
 export function getDatabaseStatus() {
-  const state = mongoose.connection.readyState;
-  const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
-  return states[state] || 'unknown';
+  return pool ? 'connected' : 'disconnected';
 }

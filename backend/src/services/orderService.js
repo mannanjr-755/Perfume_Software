@@ -1,14 +1,11 @@
-import Order from '../models/Order.js';
-import Product from '../models/Product.js';
-import Customer from '../models/Customer.js';
-import Notification from '../models/Notification.js';
-import Settings from '../models/Settings.js';
 import { createCrudService } from './crudService.js';
 import { AppError } from '../utils/AppError.js';
+import { query } from '../config/database.js';
+import { rowToDoc } from '../db/columns.js';
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 
-const base = createCrudService(Order, {
+const base = createCrudService('orders', {
   searchFields: ['customerName', 'customerEmail', 'customerPhone'],
 });
 
@@ -36,9 +33,16 @@ function normalizeItems(items) {
   }));
 }
 
+async function getProductById(id) {
+  const num = Number(id);
+  if (!Number.isInteger(num) || num <= 0) return null;
+  const res = await query('SELECT * FROM products WHERE id = $1', [num]);
+  return res.rows[0] ? rowToDoc(res.rows[0]) : null;
+}
+
 async function getSettings() {
-  const settings = await Settings.findOne();
-  return settings || null;
+  const res = await query('SELECT * FROM settings ORDER BY id LIMIT 1');
+  return res.rows[0] ? rowToDoc(res.rows[0]) : null;
 }
 
 async function getTaxRate() {
@@ -71,9 +75,16 @@ async function maybeNotifyLowStock(product) {
   const message = out
     ? `${product.name} is out of stock.`
     : `${product.name} is low on stock (${product.stock} left).`;
-  const existing = await Notification.findOne({ title, message, read: false });
-  if (existing) return;
-  await Notification.create({ title, message, type: out ? 'error' : 'warning' });
+  const existing = await query(
+    'SELECT id FROM notifications WHERE title = $1 AND message = $2 AND read = FALSE LIMIT 1',
+    [title, message]
+  );
+  if (existing.rows.length) return;
+  await query('INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [
+    title,
+    message,
+    out ? 'error' : 'warning',
+  ]);
 }
 
 async function notifyOrderEvent(kind, order) {
@@ -96,9 +107,12 @@ async function notifyOrderEvent(kind, order) {
     type = 'error';
   }
   if (!title) return;
-  const existing = await Notification.findOne({ title, message, read: false });
-  if (existing) return;
-  await Notification.create({ title, message, type });
+  const existing = await query(
+    'SELECT id FROM notifications WHERE title = $1 AND message = $2 AND read = FALSE LIMIT 1',
+    [title, message]
+  );
+  if (existing.rows.length) return;
+  await query('INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [title, message, type]);
 }
 
 async function upsertCustomerFromOrder(order) {
@@ -107,18 +121,34 @@ async function upsertCustomerFromOrder(order) {
   const phone = order.customerPhone?.trim();
   const name = order.customerName?.trim();
   if (!email && !phone && (!name || name.toLowerCase() === 'walk-in customer')) return order;
-  const query = email ? { email } : phone ? { phone } : { name };
-  let customer = await Customer.findOne(query);
-  if (!customer) {
-    customer = await Customer.create({
-      name: name || 'Walk-in Customer',
-      email: email || '',
-      phone: phone || '',
-    });
+
+  let customer;
+  if (email) {
+    const res = await query('SELECT * FROM customers WHERE email = $1 LIMIT 1', [email]);
+    customer = res.rows[0];
+  } else if (phone) {
+    const res = await query('SELECT * FROM customers WHERE phone = $1 LIMIT 1', [phone]);
+    customer = res.rows[0];
+  } else {
+    const res = await query('SELECT * FROM customers WHERE name = $1 LIMIT 1', [name]);
+    customer = res.rows[0];
   }
-  if (!order.customerId || String(order.customerId) !== String(customer._id)) {
-    order.customerId = customer._id;
-    await order.save();
+
+  if (!customer) {
+    const ins = await query(
+      'INSERT INTO customers (name, email, phone) VALUES ($1, $2, $3) RETURNING *',
+      [name || 'Walk-in Customer', email || '', phone || '']
+    );
+    customer = ins.rows[0];
+  }
+
+  const customerId = customer.id;
+  if (!order.customerId || Number(order.customerId) !== Number(customerId)) {
+    await query('UPDATE orders SET customer_id = $1, updated_at = now() WHERE id = $2', [
+      customerId,
+      Number(order._id),
+    ]);
+    order.customerId = customerId;
   }
   return order;
 }
@@ -130,7 +160,7 @@ async function deductStockForItems(items, deducted) {
     if (!item.productId) throw new AppError(`Missing product for "${item.productName}"`, 400);
     if (quantity === null) throw new AppError(`Invalid quantity for "${item.productName}"`, 400);
 
-    const product = await Product.findById(item.productId);
+    const product = await getProductById(item.productId);
     if (!product) throw new AppError(`Product "${item.productName}" no longer exists`, 400);
     if ((product.stock ?? 0) < quantity) {
       throw new AppError(
@@ -139,23 +169,25 @@ async function deductStockForItems(items, deducted) {
       );
     }
 
-    const updated = await Product.findOneAndUpdate(
-      { _id: product._id, stock: { $gte: quantity } },
-      { $inc: { stock: -quantity } },
-      { new: true }
+    const updated = await query(
+      'UPDATE products SET stock = stock - $1, updated_at = now() WHERE id = $2 AND stock >= $1 RETURNING *',
+      [quantity, Number(product._id)]
     );
-    if (!updated) {
+    if (!updated.rows[0]) {
       throw new AppError(`Not enough stock for "${product.name}". Available: ${product.stock}`, 400);
     }
     acc.push({ productId: item.productId, quantity });
-    await maybeNotifyLowStock(updated);
+    await maybeNotifyLowStock(rowToDoc(updated.rows[0]));
   }
   return acc;
 }
 
 async function rollbackStock(deducted) {
   for (const { productId, quantity } of deducted) {
-    await Product.findOneAndUpdate({ _id: productId }, { $inc: { stock: quantity } });
+    await query('UPDATE products SET stock = stock + $1, updated_at = now() WHERE id = $2', [
+      quantity,
+      Number(productId),
+    ]);
   }
 }
 
@@ -164,13 +196,24 @@ async function restoreStockForItems(items) {
   for (const item of items) {
     const quantity = toQuantity(item.quantity);
     if (!item.productId || quantity === null) continue;
-    await Product.findOneAndUpdate(
-      { _id: item.productId },
-      { $inc: { stock: quantity } }
-    );
+    await query('UPDATE products SET stock = stock + $1, updated_at = now() WHERE id = $2', [
+      quantity,
+      Number(item.productId),
+    ]);
     restored.push({ productId: item.productId, quantity });
   }
   return restored;
+}
+
+async function nextOrderNumber() {
+  const settings = await getSettings();
+  const prefix = settings?.orderPrefix || 'PFM-';
+  const res = await query(
+    `INSERT INTO counters (name, seq) VALUES ('orders', 1)
+     ON CONFLICT (name) DO UPDATE SET seq = counters.seq + 1
+     RETURNING seq`
+  );
+  return `${prefix}${String(res.rows[0].seq).padStart(4, '0')}`;
 }
 
 async function create(data) {
@@ -188,9 +231,11 @@ async function create(data) {
   const taxRate = await getTaxRate();
   const totals = computeTotals(items, data.discount, taxRate);
   const paymentStatus = data.paymentStatus || (data.status === 'delivered' ? 'paid' : 'pending');
+  const orderNumber = await nextOrderNumber();
 
   const payload = {
     ...data,
+    orderNumber,
     items,
     subtotal: totals.subtotal,
     discount: totals.discount,
@@ -213,7 +258,7 @@ async function create(data) {
 }
 
 async function update(id, data) {
-  const order = await Order.findById(id);
+  const order = await base.getById(id);
   if (!order) throw new AppError('Record not found', 404);
 
   const wasActive = order.status !== 'cancelled';
@@ -221,10 +266,6 @@ async function update(id, data) {
   const items = normalizeItems(data.items);
   const effectiveItems = items.length ? items : order.items;
 
-  // An active order already had its items' stock deducted. To modify it we must
-  // give that stock back first and then deduct for the new item set. If anything
-  // fails after the restore, we re-deduct the ORIGINAL items so the stock in the
-  // database always matches the stored order.
   let restored = [];
   let payload;
 
@@ -284,7 +325,7 @@ async function update(id, data) {
 }
 
 async function remove(id) {
-  const order = await Order.findById(id);
+  const order = await base.getById(id);
   if (!order) throw new AppError('Record not found', 404);
   if (order.status === 'cancelled') return base.delete(id);
 

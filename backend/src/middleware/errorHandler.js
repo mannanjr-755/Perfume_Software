@@ -9,7 +9,11 @@ function isValidationError(err) {
 }
 
 function isDuplicateKeyError(err) {
-  return err?.code === 11000 || (err?.name === 'MongoServerError' && err?.code === 11000);
+  return (
+    err?.code === 11000 ||
+    err?.code === '23505' ||
+    (err?.name === 'MongoServerError' && err?.code === 11000)
+  );
 }
 
 function extractDuplicateMessage(err) {
