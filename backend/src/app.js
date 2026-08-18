@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import env from './config/env.js';
 import apiRoutes from './routes/apiRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
-import { getDatabaseStatus } from './config/database.js';
+import { query } from './config/database.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { success } from './utils/apiResponse.js';
 
@@ -36,9 +36,16 @@ app.use('/api', limiter);
 
 app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
+  let database = 'disconnected';
+  try {
+    await query('SELECT 1');
+    database = 'connected';
+  } catch {
+    database = 'disconnected';
+  }
   return success(res, 'API is healthy', {
-    database: getDatabaseStatus(),
+    database,
     timestamp: new Date().toISOString(),
   });
 });
