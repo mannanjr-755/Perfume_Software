@@ -12,6 +12,7 @@ const STATEMENTS = [
     low_stock_threshold INTEGER NOT NULL DEFAULT 5,
     image TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
+    size TEXT NOT NULL DEFAULT '',
     barcode TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -94,6 +95,7 @@ const STATEMENTS = [
     name TEXT PRIMARY KEY,
     seq INTEGER NOT NULL DEFAULT 0
   )`,
+  `ALTER TABLE products ADD COLUMN IF NOT EXISTS size TEXT NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders (created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status)`,
   `CREATE INDEX IF NOT EXISTS idx_products_barcode ON products (barcode)`,

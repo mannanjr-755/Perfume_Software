@@ -1,7 +1,7 @@
 import { createCrudService } from './crudService.js';
 import { AppError } from '../utils/AppError.js';
-import { query } from '../config/database.js';
-import { rowToDoc } from '../db/columns.js';
+import { query, withTransaction } from '../config/database.js';
+import { rowToDoc, buildInsert, buildUpdate } from '../db/columns.js';
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 
@@ -18,40 +18,52 @@ function toQuantity(value) {
   return Number.isInteger(qty) && qty >= 1 ? qty : null;
 }
 
-function normalizeItems(items) {
-  if (!Array.isArray(items)) return [];
-  return items.map((item) => ({
-    productId: item.productId,
-    productName: String(item.productName || item.name || 'Product'),
-    brand: String(item.brand || ''),
-    category: String(item.category || ''),
-    description: String(item.description || ''),
-    image: String(item.image || ''),
-    barcode: String(item.barcode || ''),
-    quantity: item.quantity,
-    price: Number(item.price || 0),
-  }));
+function dbQuery(client, text, params) {
+  return client ? client.query(text, params) : query(text, params);
 }
 
-async function getProductById(id) {
-  const num = Number(id);
-  if (!Number.isInteger(num) || num <= 0) return null;
-  const res = await query('SELECT * FROM products WHERE id = $1', [num]);
+function lineFromProduct(product, quantity) {
+  return {
+    productId: product._id,
+    productName: String(product.name || 'Product'),
+    brand: String(product.brand || ''),
+    category: String(product.category || ''),
+    description: String(product.description || ''),
+    image: String(product.image || ''),
+    barcode: String(product.barcode || ''),
+    size: String(product.size || ''),
+    quantity,
+    price: Number(product.price) || 0,
+  };
+}
+
+function requestedQuantities(items) {
+  if (!Array.isArray(items) || !items.length) {
+    throw new AppError('Order must contain at least one product', 400);
+  }
+  const grouped = new Map();
+  for (const item of items) {
+    const productId = Number(item.productId);
+    const quantity = toQuantity(item.quantity);
+    if (!productId) throw new AppError(`Missing product for "${item.productName || 'item'}"`, 400);
+    if (quantity === null) throw new AppError(`Invalid quantity for "${item.productName || 'item'}"`, 400);
+    grouped.set(productId, (grouped.get(productId) || 0) + quantity);
+  }
+  return grouped;
+}
+
+async function getSettings(client) {
+  const res = await dbQuery(client, 'SELECT * FROM settings ORDER BY id LIMIT 1', []);
   return res.rows[0] ? rowToDoc(res.rows[0]) : null;
 }
 
-async function getSettings() {
-  const res = await query('SELECT * FROM settings ORDER BY id LIMIT 1');
-  return res.rows[0] ? rowToDoc(res.rows[0]) : null;
-}
-
-async function getTaxRate() {
-  const settings = await getSettings();
+async function getTaxRate(client) {
+  const settings = await getSettings(client);
   return Number(settings?.taxRate) || 0;
 }
 
-async function getLowStockThreshold() {
-  const settings = await getSettings();
+async function getLowStockThreshold(client) {
+  const settings = await getSettings(client);
   return Number(settings?.lowStockThreshold) ?? DEFAULT_LOW_STOCK_THRESHOLD;
 }
 
@@ -65,30 +77,31 @@ function computeTotals(items, discount, taxRate) {
   return { subtotal, discount: disc, tax, total };
 }
 
-async function maybeNotifyLowStock(product) {
-  const threshold = await getLowStockThreshold();
+async function maybeNotifyLowStock(product, client) {
+  const threshold = await getLowStockThreshold(client);
   if (product.stock > threshold) return;
-  const settings = await getSettings();
+  const settings = await getSettings(client);
   if (settings?.notifyLowStock === false) return;
   const out = product.stock === 0;
   const title = out ? 'Out of stock' : 'Low stock';
   const message = out
     ? `${product.name} is out of stock.`
     : `${product.name} is low on stock (${product.stock} left).`;
-  const existing = await query(
+  const existing = await dbQuery(
+    client,
     'SELECT id FROM notifications WHERE title = $1 AND message = $2 AND read = FALSE LIMIT 1',
     [title, message]
   );
   if (existing.rows.length) return;
-  await query('INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [
+  await dbQuery(client, 'INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [
     title,
     message,
     out ? 'error' : 'warning',
   ]);
 }
 
-async function notifyOrderEvent(kind, order) {
-  const settings = await getSettings();
+async function notifyOrderEvent(kind, order, client) {
+  const settings = await getSettings(client);
   if (settings?.notifyNewOrder === false && kind !== 'cancelled') return;
   const orderRef = order.orderNumber || `#${order._id}`;
   let title;
@@ -108,15 +121,20 @@ async function notifyOrderEvent(kind, order) {
     type = 'error';
   }
   if (!title) return;
-  const existing = await query(
+  const existing = await dbQuery(
+    client,
     'SELECT id FROM notifications WHERE title = $1 AND message = $2 AND read = FALSE LIMIT 1',
     [title, message]
   );
   if (existing.rows.length) return;
-  await query('INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [title, message, type]);
+  await dbQuery(client, 'INSERT INTO notifications (title, message, type) VALUES ($1, $2, $3)', [
+    title,
+    message,
+    type,
+  ]);
 }
 
-async function upsertCustomerFromOrder(order) {
+async function upsertCustomerFromOrder(order, client) {
   if (order.customerId) return order;
   const email = order.customerEmail?.trim();
   const phone = order.customerPhone?.trim();
@@ -125,18 +143,19 @@ async function upsertCustomerFromOrder(order) {
 
   let customer;
   if (email) {
-    const res = await query('SELECT * FROM customers WHERE email = $1 LIMIT 1', [email]);
+    const res = await dbQuery(client, 'SELECT * FROM customers WHERE email = $1 LIMIT 1', [email]);
     customer = res.rows[0];
   } else if (phone) {
-    const res = await query('SELECT * FROM customers WHERE phone = $1 LIMIT 1', [phone]);
+    const res = await dbQuery(client, 'SELECT * FROM customers WHERE phone = $1 LIMIT 1', [phone]);
     customer = res.rows[0];
   } else {
-    const res = await query('SELECT * FROM customers WHERE name = $1 LIMIT 1', [name]);
+    const res = await dbQuery(client, 'SELECT * FROM customers WHERE name = $1 LIMIT 1', [name]);
     customer = res.rows[0];
   }
 
   if (!customer) {
-    const ins = await query(
+    const ins = await dbQuery(
+      client,
       'INSERT INTO customers (name, email, phone) VALUES ($1, $2, $3) RETURNING *',
       [name || 'Walk-in Customer', email || '', phone || '']
     );
@@ -145,7 +164,7 @@ async function upsertCustomerFromOrder(order) {
 
   const customerId = customer.id;
   if (!order.customerId || Number(order.customerId) !== Number(customerId)) {
-    await query('UPDATE orders SET customer_id = $1, updated_at = now() WHERE id = $2', [
+    await dbQuery(client, 'UPDATE orders SET customer_id = $1, updated_at = now() WHERE id = $2', [
       customerId,
       Number(order._id),
     ]);
@@ -154,50 +173,12 @@ async function upsertCustomerFromOrder(order) {
   return order;
 }
 
-async function deductStockForItems(items, deducted) {
-  const acc = Array.isArray(deducted) ? deducted : [];
-  for (const item of items) {
-    const quantity = toQuantity(item.quantity);
-    if (!item.productId) throw new AppError(`Missing product for "${item.productName}"`, 400);
-    if (quantity === null) throw new AppError(`Invalid quantity for "${item.productName}"`, 400);
-
-    const product = await getProductById(item.productId);
-    if (!product) throw new AppError(`Product "${item.productName}" no longer exists`, 400);
-    if ((product.stock ?? 0) < quantity) {
-      throw new AppError(
-        `Not enough stock for "${product.name}". Available: ${product.stock}`,
-        400
-      );
-    }
-
-    const updated = await query(
-      'UPDATE products SET stock = stock - $1, updated_at = now() WHERE id = $2 AND stock >= $1 RETURNING *',
-      [quantity, Number(product._id)]
-    );
-    if (!updated.rows[0]) {
-      throw new AppError(`Not enough stock for "${product.name}". Available: ${product.stock}`, 400);
-    }
-    acc.push({ productId: item.productId, quantity });
-    await maybeNotifyLowStock(rowToDoc(updated.rows[0]));
-  }
-  return acc;
-}
-
-async function rollbackStock(deducted) {
-  for (const { productId, quantity } of deducted) {
-    await query('UPDATE products SET stock = stock + $1, updated_at = now() WHERE id = $2', [
-      quantity,
-      Number(productId),
-    ]);
-  }
-}
-
-async function restoreStockForItems(items) {
+async function restoreStockForItems(items, client) {
   const restored = [];
-  for (const item of items) {
+  for (const item of items || []) {
     const quantity = toQuantity(item.quantity);
     if (!item.productId || quantity === null) continue;
-    await query('UPDATE products SET stock = stock + $1, updated_at = now() WHERE id = $2', [
+    await dbQuery(client, 'UPDATE products SET stock = stock + $1, updated_at = now() WHERE id = $2', [
       quantity,
       Number(item.productId),
     ]);
@@ -206,10 +187,71 @@ async function restoreStockForItems(items) {
   return restored;
 }
 
-async function nextOrderNumber() {
-  const settings = await getSettings();
+/**
+ * Lock products in id order, validate stock, deduct, and return priced lines from DB.
+ * Frontend prices/names/stock are never trusted.
+ */
+async function deductAndBuildLines(items, client) {
+  const grouped = requestedQuantities(items);
+  const ids = [...grouped.keys()].sort((a, b) => a - b);
+  const lines = [];
+
+  for (const id of ids) {
+    const quantity = grouped.get(id);
+    const locked = await dbQuery(client, 'SELECT * FROM products WHERE id = $1 FOR UPDATE', [id]);
+    if (!locked.rows[0]) throw new AppError('A product on this order no longer exists', 400);
+    const product = rowToDoc(locked.rows[0]);
+    if (product.status && product.status !== 'active') {
+      throw new AppError(`"${product.name}" is inactive and cannot be sold`, 400);
+    }
+    if ((product.stock ?? 0) < quantity) {
+      throw new AppError(`Not enough stock for "${product.name}". Available: ${product.stock}`, 400);
+    }
+
+    const updated = await dbQuery(
+      client,
+      'UPDATE products SET stock = stock - $1, updated_at = now() WHERE id = $2 AND stock >= $1 RETURNING *',
+      [quantity, id]
+    );
+    if (!updated.rows[0]) {
+      throw new AppError(`Not enough stock for "${product.name}". Available: ${product.stock}`, 400);
+    }
+    lines.push(lineFromProduct(product, quantity));
+    await maybeNotifyLowStock(rowToDoc(updated.rows[0]), client);
+  }
+
+  return lines;
+}
+
+async function insertOrder(payload, client) {
+  const { columns, values } = buildInsert('orders', payload);
+  const res = await dbQuery(
+    client,
+    `INSERT INTO orders (${columns.join(', ')}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING *`,
+    values
+  );
+  return rowToDoc(res.rows[0]);
+}
+
+async function updateOrderRow(id, payload, client) {
+  const { sets, values } = buildUpdate('orders', payload);
+  if (!sets.length) {
+    const existing = await dbQuery(client, 'SELECT * FROM orders WHERE id = $1', [Number(id)]);
+    return existing.rows[0] ? rowToDoc(existing.rows[0]) : null;
+  }
+  const res = await dbQuery(
+    client,
+    `UPDATE orders SET ${sets.join(', ')}, updated_at = now() WHERE id = $${values.length + 1} RETURNING *`,
+    [...values, Number(id)]
+  );
+  return res.rows[0] ? rowToDoc(res.rows[0]) : null;
+}
+
+async function nextOrderNumber(client) {
+  const settings = await getSettings(client);
   const prefix = settings?.orderPrefix || 'PFM-';
-  const res = await query(
+  const res = await dbQuery(
+    client,
     `INSERT INTO counters (name, seq) VALUES ('orders', 1)
      ON CONFLICT (name) DO UPDATE SET seq = counters.seq + 1
      RETURNING seq`
@@ -218,79 +260,57 @@ async function nextOrderNumber() {
 }
 
 async function create(data) {
-  const items = normalizeItems(data.items);
-  if (!items.length) throw new AppError('Order must contain at least one product', 400);
+  return withTransaction(async (client) => {
+    const taxRate = await getTaxRate(client);
+    const lines = await deductAndBuildLines(data.items, client);
+    const totals = computeTotals(lines, data.discount, taxRate);
+    const paymentStatus = data.paymentStatus || (data.status === 'delivered' ? 'paid' : 'pending');
+    const orderNumber = await nextOrderNumber(client);
 
-  let deducted = [];
-  try {
-    await deductStockForItems(items, deducted);
-  } catch (error) {
-    await rollbackStock(deducted);
-    throw error;
-  }
+    const payload = {
+      ...data,
+      orderNumber,
+      items: lines,
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      tax: totals.tax,
+      total: totals.total,
+      paymentStatus,
+    };
 
-  const taxRate = await getTaxRate();
-  const totals = computeTotals(items, data.discount, taxRate);
-  const paymentStatus = data.paymentStatus || (data.status === 'delivered' ? 'paid' : 'pending');
-  const orderNumber = await nextOrderNumber();
-
-  const payload = {
-    ...data,
-    orderNumber,
-    items,
-    subtotal: totals.subtotal,
-    discount: totals.discount,
-    tax: totals.tax,
-    total: totals.total,
-    paymentStatus,
-  };
-
-  let order;
-  try {
-    order = await base.create(payload);
-  } catch (error) {
-    await rollbackStock(deducted);
-    throw error;
-  }
-
-  await upsertCustomerFromOrder(order);
-  await notifyOrderEvent(order.status === 'delivered' ? 'delivered' : 'created', order);
-  return order;
+    let order = await insertOrder(payload, client);
+    order = await upsertCustomerFromOrder(order, client);
+    await notifyOrderEvent(order.status === 'delivered' ? 'delivered' : 'created', order, client);
+    return order;
+  });
 }
 
 async function update(id, data) {
-  const order = await base.getById(id);
-  if (!order) throw new AppError('Record not found', 404);
+  return withTransaction(async (client) => {
+    const existingRes = await dbQuery(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [Number(id)]);
+    if (!existingRes.rows[0]) throw new AppError('Record not found', 404);
+    const order = rowToDoc(existingRes.rows[0]);
 
-  const wasActive = order.status !== 'cancelled';
-  const newStatus = data.status || order.status;
-  const items = normalizeItems(data.items);
-  const effectiveItems = items.length ? items : order.items;
+    const wasActive = order.status !== 'cancelled';
+    const newStatus = data.status || order.status;
+    const incomingItems = Array.isArray(data.items) ? data.items : [];
+    const sourceItems = incomingItems.length ? incomingItems : order.items;
 
-  let restored = [];
-  let payload;
-
-  try {
     if (wasActive) {
-      restored = await restoreStockForItems(order.items);
+      await restoreStockForItems(order.items, client);
     }
 
+    let payload;
     if (newStatus === 'cancelled') {
-      payload = { ...data, items: effectiveItems, status: 'cancelled' };
+      payload = { ...data, items: sourceItems, status: 'cancelled' };
     } else {
-      let deducted = [];
-      try {
-        await deductStockForItems(effectiveItems, deducted);
-      } catch (error) {
-        await rollbackStock(deducted);
-        throw error;
-      }
-      const taxRate = await getTaxRate();
+      const lines = await deductAndBuildLines(sourceItems, client);
+      const taxRate = await getTaxRate(client);
       const discount = data.discount ?? order.discount ?? 0;
-      const totals = computeTotals(effectiveItems, discount, taxRate);
+      const totals = computeTotals(lines, discount, taxRate);
       payload = {
         ...data,
-        items: effectiveItems,
+        items: lines,
         subtotal: totals.subtotal,
         discount: totals.discount,
         tax: totals.tax,
@@ -303,44 +323,33 @@ async function update(id, data) {
       payload.paymentStatus = newStatus === 'delivered' ? 'paid' : order.paymentStatus || 'pending';
     }
 
-    const updated = await base.update(id, payload);
-    restored = [];
+    const updated = await updateOrderRow(id, payload, client);
+    if (!updated) throw new AppError('Record not found', 404);
 
     if (order.status !== 'cancelled' && newStatus === 'cancelled') {
-      await notifyOrderEvent('cancelled', updated);
+      await notifyOrderEvent('cancelled', updated, client);
     } else if (order.status !== newStatus && newStatus === 'delivered') {
-      await notifyOrderEvent('delivered', updated);
+      await notifyOrderEvent('delivered', updated, client);
     }
 
     return updated;
-  } catch (error) {
-    if (restored.length) {
-      try {
-        await deductStockForItems(restored);
-      } catch (rollbackError) {
-        console.error('[Order] Failed to re-deduct stock after update failure:', rollbackError.message);
-      }
-    }
-    throw error;
-  }
+  });
 }
 
 async function remove(id) {
-  const order = await base.getById(id);
-  if (!order) throw new AppError('Record not found', 404);
-  if (order.status === 'cancelled') return base.delete(id);
+  return withTransaction(async (client) => {
+    const existingRes = await dbQuery(client, 'SELECT * FROM orders WHERE id = $1 FOR UPDATE', [Number(id)]);
+    if (!existingRes.rows[0]) throw new AppError('Record not found', 404);
+    const order = rowToDoc(existingRes.rows[0]);
 
-  const restored = await restoreStockForItems(order.items);
-  try {
-    return await base.delete(id);
-  } catch (error) {
-    try {
-      await deductStockForItems(restored);
-    } catch (rollbackError) {
-      console.error('[Order] Failed to re-deduct stock after delete failure:', rollbackError.message);
+    if (order.status !== 'cancelled') {
+      await restoreStockForItems(order.items, client);
     }
-    throw error;
-  }
+
+    const deleted = await dbQuery(client, 'DELETE FROM orders WHERE id = $1 RETURNING *', [Number(id)]);
+    if (!deleted.rows[0]) throw new AppError('Record not found', 404);
+    return rowToDoc(deleted.rows[0]);
+  });
 }
 
 export const orderService = {

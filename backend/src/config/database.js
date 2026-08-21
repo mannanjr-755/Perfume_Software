@@ -42,6 +42,27 @@ export async function query(text, params) {
   return pool.query(text, params);
 }
 
+/** Run work on a single client inside BEGIN/COMMIT; ROLLBACK on any error. */
+export async function withTransaction(callback) {
+  if (!pool) await connectDatabase();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('[DB] Rollback failed:', rollbackError.message);
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function disconnectDatabase() {
   if (!pool) return;
   await pool.end();

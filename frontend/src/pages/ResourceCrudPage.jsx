@@ -17,6 +17,7 @@ import {
 import { getErrorMessage } from '../services/api.js';
 import ProductImage from '../components/ui/ProductImage.jsx';
 import BarcodeLabel from '../components/ui/BarcodeLabel.jsx';
+import BarcodeScanInput from '../components/BarcodeScanInput.jsx';
 import { printBarcodeLabel } from '../utils/printBarcode.js';
 import { formatMoney } from '../utils/currency.js';
 
@@ -39,6 +40,7 @@ function toOrderItem(product, quantity = 1) {
     description: product.description || '',
     image: product.image || '',
     barcode: product.barcode || '',
+    size: product.size || '',
     quantity: Math.max(1, Number(quantity) || 1),
     price: Number(product.price || 0),
   };
@@ -67,6 +69,7 @@ export default function ResourceCrudPage({
   onUpdated,
   onDeleted,
   viewDetails,
+  enableBarcodeScan = false,
 }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -267,6 +270,14 @@ export default function ResourceCrudPage({
 
       return (
         <div className="space-y-2">
+          <BarcodeScanInput
+            mode="value"
+            keepValue
+            autoFocus={false}
+            captureGlobalScans
+            placeholder="Scan barcode to fill this field"
+            onCode={(code) => setForm((current) => ({ ...current, [field.name]: code }))}
+          />
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <span className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-[var(--text-muted)]">
@@ -274,8 +285,10 @@ export default function ResourceCrudPage({
               </span>
               <input
                 type="text"
-                inputMode="numeric"
-                placeholder="Scan with USB scanner or type manually"
+                inputMode="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Or type barcode manually (leading zeros are kept)"
                 className="input-field pl-9"
                 value={form[field.name] || ''}
                 onChange={(e) => setForm({ ...form, [field.name]: e.target.value })}
@@ -311,7 +324,7 @@ export default function ResourceCrudPage({
             </div>
           ) : (
             <p className="text-xs panel-muted">
-              Leave empty to save without a barcode, type it manually, or use Generate for a unique Code 128 code.
+              Scan a USB/Bluetooth HID scanner, type the code (leading zeros are kept), or Generate. Duplicate barcodes cannot be saved. If left empty on create, a unique barcode is assigned automatically.
             </p>
           )}
         </div>
@@ -484,6 +497,26 @@ export default function ResourceCrudPage({
 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {enableBarcodeScan && !modalOpen ? (
+            <BarcodeScanInput
+              autoFocus={false}
+              captureGlobalScans
+              placeholder="Scan barcode to open product"
+              className="sm:min-w-[280px]"
+              onProductFound={(product) => {
+                if (viewDetails) setViewing(product);
+                else openEdit(product);
+              }}
+              onNotFound={(code) => {
+                Swal.fire({
+                  icon: 'error',
+                  title: 'Product Not Found',
+                  text: `Barcode:\n${code}\nThis barcode is not assigned to any product.`,
+                });
+              }}
+              notifyErrors={false}
+            />
+          ) : null}
           <input
             type="search"
             placeholder="Search..."

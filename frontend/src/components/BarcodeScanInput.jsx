@@ -20,7 +20,7 @@ function isTerminator(key) {
 }
 
 function isBarcodeChar(key) {
-  return key.length === 1 && !/[\u0000-\u001f]/.test(key);
+  return key.length === 1 && key.charCodeAt(0) >= 32;
 }
 
 function isEditableTarget(target) {
@@ -32,14 +32,21 @@ function isEditableTarget(target) {
 
 export default function BarcodeScanInput({
   onProductFound,
+  onCode,
+  onNotFound,
   onScanStateChange,
   disabled = false,
   inputRef: externalRef,
   className = '',
   ringClass = '',
-  placeholder = 'Scan barcode here — or type the number and press Enter',
+  inputClassName = '',
+  placeholder = 'Scan barcode or enter barcode manually',
   autoFocus = true,
   captureGlobalScans = false,
+  /** lookup = GET product by barcode; value = only capture the code (product form). */
+  mode = 'lookup',
+  keepValue = false,
+  notifyErrors = true,
 }) {
   const [searching, setSearching] = useState(false);
   const internalRef = useRef(null);
@@ -69,9 +76,16 @@ export default function BarcodeScanInput({
       setSearching(true);
       onScanStateChange?.('idle');
       bufferRef.current = '';
-      setFieldValue('');
+      if (!keepValue) setFieldValue('');
 
       try {
+        onCode?.(code);
+        if (mode === 'value') {
+          setFieldValue(code);
+          onScanStateChange?.('success');
+          return;
+        }
+
         const res = await fetchProductByBarcode(code);
         const product = res?.data ?? res;
         if (!product || (product._id == null && !product.name)) {
@@ -83,21 +97,37 @@ export default function BarcodeScanInput({
         onScanStateChange?.('error');
         const status = error?.status;
         if (status === 404) {
-          toastError('Barcode not found', `No product matches barcode "${code}".`);
-        } else {
+          onNotFound?.(code);
+          if (notifyErrors && !onNotFound) {
+            toastError(
+              'Product Not Found',
+              `Barcode:\n${code}\nThis barcode is not assigned to any product.`
+            );
+          }
+        } else if (notifyErrors) {
           toastError('Scan failed', getErrorMessage(error) || `Could not look up barcode "${code}".`);
         }
       } finally {
         searchingRef.current = false;
         setSearching(false);
-        setFieldValue('');
+        if (!keepValue) setFieldValue('');
         inputRef.current?.focus();
         window.setTimeout(() => onScanStateChange?.('idle'), 1800);
         const next = queueRef.current.shift();
         if (next) lookupRef.current(next);
       }
     },
-    [inputRef, onProductFound, onScanStateChange, setFieldValue]
+    [
+      inputRef,
+      keepValue,
+      mode,
+      notifyErrors,
+      onCode,
+      onNotFound,
+      onProductFound,
+      onScanStateChange,
+      setFieldValue,
+    ]
   );
 
   lookupRef.current = lookupBarcode;
@@ -170,7 +200,15 @@ export default function BarcodeScanInput({
 
         if (target?.dataset?.barcodeScan) return;
 
-        if (captureGlobalScans && scannerSuffix && buffered.length >= MIN_BARCODE_LENGTH) {
+        const openModal = document.querySelector('[data-modal-open="true"]');
+        const blockedByModal = Boolean(openModal && inputRef.current && !openModal.contains(inputRef.current));
+
+        if (
+          captureGlobalScans &&
+          !blockedByModal &&
+          scannerSuffix &&
+          buffered.length >= MIN_BARCODE_LENGTH
+        ) {
           event.preventDefault();
           event.stopPropagation();
           bufferRef.current = '';
@@ -198,6 +236,9 @@ export default function BarcodeScanInput({
       }
 
       if (!captureGlobalScans) return;
+
+      const openModal = document.querySelector('[data-modal-open="true"]');
+      if (openModal && inputRef.current && !openModal.contains(inputRef.current)) return;
 
       const gap = now - lastKeyAtRef.current;
       const otherField = isEditableTarget(target);
@@ -246,7 +287,7 @@ export default function BarcodeScanInput({
         disabled={disabled}
         defaultValue=""
         placeholder={placeholder}
-        className="input-field pl-10 pr-10 barcode-ready"
+        className={`input-field pl-10 pr-10 barcode-ready ${inputClassName}`}
         aria-label="Scan barcode"
         data-barcode-scan="true"
         onPaste={(event) => {

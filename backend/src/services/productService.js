@@ -5,11 +5,23 @@ import { rowToDoc } from '../db/columns.js';
 import { normalizeBarcode, isValidBarcode, generateBarcode } from '../utils/barcode.js';
 
 const base = createCrudService('products', {
-  searchFields: ['name', 'brand', 'category', 'barcode', 'sku'],
+  searchFields: ['name', 'brand', 'category', 'barcode', 'sku', 'size'],
 });
 
 function isDuplicateKeyError(error) {
   return error?.code === '23505';
+}
+
+function duplicateMessage(error) {
+  const constraint = String(error?.constraint || '');
+  const detail = String(error?.detail || '');
+  if (constraint.includes('barcode') || detail.includes('(barcode)')) {
+    return 'This barcode is already assigned to another product.';
+  }
+  if (constraint.includes('sku') || detail.includes('(sku)')) {
+    return 'A product with this SKU already exists';
+  }
+  return 'A product with this barcode/SKU already exists';
 }
 
 function normalizeSku(input) {
@@ -27,7 +39,12 @@ async function ensureUnique(field, value, excludeId, label) {
     sql += ` AND id <> $2`;
   }
   const existing = await query(sql, params);
-  if (existing.rows.length) throw new AppError(`A product with ${label} "${value}" already exists`, 400);
+  if (existing.rows.length) {
+    if (field === 'barcode') {
+      throw new AppError('This barcode is already assigned to another product.', 400);
+    }
+    throw new AppError(`A product with ${label} "${value}" already exists`, 400);
+  }
   return value;
 }
 
@@ -41,10 +58,14 @@ async function ensureUniqueBarcode(barcode, excludeId) {
 
 function cleanPayload(data) {
   const payload = { ...data };
-  payload.barcode = normalizeBarcode(payload.barcode);
-  if (payload.barcode === undefined) delete payload.barcode;
+  if (Object.prototype.hasOwnProperty.call(data, 'barcode')) {
+    payload.barcode = normalizeBarcode(data.barcode) || null;
+  } else {
+    delete payload.barcode;
+  }
   payload.sku = normalizeSku(payload.sku);
   if (payload.sku === undefined) delete payload.sku;
+  if (payload.size != null) payload.size = String(payload.size).trim();
   if (payload.stock != null) payload.stock = Math.max(0, Number(payload.stock) || 0);
   if (payload.price != null) payload.price = Math.max(0, Number(payload.price) || 0);
   if (payload.purchasePrice != null) payload.purchasePrice = Math.max(0, Number(payload.purchasePrice) || 0);
@@ -54,28 +75,30 @@ function cleanPayload(data) {
 
 async function create(data) {
   const payload = cleanPayload(data);
-  payload.barcode = await ensureUniqueBarcode(payload.barcode);
+  if (!payload.barcode) {
+    payload.barcode = await nextBarcode();
+  } else {
+    payload.barcode = await ensureUniqueBarcode(payload.barcode);
+  }
   payload.sku = await ensureUnique('sku', payload.sku, null, 'SKU');
   try {
     return await base.create(payload);
   } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      throw new AppError('A product with this barcode/SKU already exists', 400);
-    }
+    if (isDuplicateKeyError(error)) throw new AppError(duplicateMessage(error), 400);
     throw error;
   }
 }
 
 async function update(id, data) {
   const payload = cleanPayload(data);
-  payload.barcode = await ensureUniqueBarcode(payload.barcode, id);
+  if (payload.barcode) {
+    payload.barcode = await ensureUniqueBarcode(payload.barcode, id);
+  }
   payload.sku = await ensureUnique('sku', payload.sku, id, 'SKU');
   try {
     return await base.update(id, payload);
   } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      throw new AppError('A product with this barcode/SKU already exists', 400);
-    }
+    if (isDuplicateKeyError(error)) throw new AppError(duplicateMessage(error), 400);
     throw error;
   }
 }
@@ -83,8 +106,14 @@ async function update(id, data) {
 async function findByBarcode(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) throw new AppError('Barcode cannot be empty', 400);
-  const res = await query('SELECT * FROM products WHERE UPPER(TRIM(barcode)) = $1', [code]);
-  if (!res.rows[0]) throw new AppError('No product found with this barcode', 404);
+  if (!isValidBarcode(code)) {
+    throw new AppError('Invalid barcode format', 400);
+  }
+  // Exact equality uses idx_products_barcode / UNIQUE(barcode). Do not search by name.
+  const res = await query('SELECT * FROM products WHERE barcode = $1', [code]);
+  if (!res.rows[0]) {
+    throw new AppError('Product Not Found', 404);
+  }
   return rowToDoc(res.rows[0]);
 }
 

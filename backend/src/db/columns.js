@@ -28,6 +28,7 @@ export const TABLE_COLUMNS = {
     'low_stock_threshold',
     'image',
     'status',
+    'size',
     'barcode',
   ],
   orders: [
@@ -69,6 +70,7 @@ export const TABLE_COLUMNS = {
 
 function serializeValue(table, column, value) {
   if (column === 'items') return JSON.stringify(value ?? []);
+  if (column === 'barcode' && value != null) return String(value);
   if (value === undefined) return null;
   return value;
 }

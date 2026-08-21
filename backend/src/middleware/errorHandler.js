@@ -17,6 +17,14 @@ function isDuplicateKeyError(err) {
 }
 
 function extractDuplicateMessage(err) {
+  const constraint = String(err.constraint || '');
+  const detail = String(err.detail || '');
+  if (constraint.includes('barcode') || detail.includes('(barcode)')) {
+    return 'This barcode is already assigned to another product.';
+  }
+  if (constraint.includes('sku') || detail.includes('(sku)')) {
+    return 'A product with this SKU already exists';
+  }
   try {
     const keys = Object.keys(err.keyPattern || {});
     if (keys.length) return `A record with this ${keys.join(', ')} already exists`;

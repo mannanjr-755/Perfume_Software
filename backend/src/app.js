@@ -31,6 +31,7 @@ const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,
   message: { success: false, message: 'Too many requests, please try again later' },
+  skip: (req) => req.method === 'GET' && /\/products\/barcode\//.test(req.originalUrl || ''),
 });
 app.use('/api', limiter);
 

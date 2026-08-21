@@ -9,7 +9,6 @@ import { fetchResource, createResource } from '../services/resourceService.js';
 import { formatRs } from '../utils/currency.js';
 import { LOW_STOCK_THRESHOLD } from '../utils/barcode.js';
 import { upsertOrderItem } from '../utils/orderCart.js';
-import { toastSuccess, toastError, toastWarning } from '../utils/toast.js';
 
 const paymentMethods = [
   { value: 'Cash', label: 'Cash' },
@@ -28,6 +27,7 @@ function toCartItem(product) {
     description: product.description || '',
     image: product.image || '',
     barcode: product.barcode || '',
+    size: product.size || '',
     price: Number(product.price) || 0,
     stock: Number(product.stock) || 0,
     quantity: 1,
@@ -40,6 +40,7 @@ export default function PosScanner({ onOrderCreated }) {
   const [manualProductId, setManualProductId] = useState('');
   const [cart, setCart] = useState([]);
   const [scanState, setScanState] = useState('idle');
+  const [scanNotice, setScanNotice] = useState(null);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('Cash');
@@ -49,6 +50,7 @@ export default function PosScanner({ onOrderCreated }) {
 
   const inputRef = useRef(null);
   const cartRef = useRef(cart);
+  const noticeTimerRef = useRef(0);
 
   useEffect(() => {
     cartRef.current = cart;
@@ -59,6 +61,19 @@ export default function PosScanner({ onOrderCreated }) {
       inputRef.current?.focus();
     });
   }, []);
+
+  const showNotice = useCallback((notice) => {
+    window.clearTimeout(noticeTimerRef.current);
+    setScanNotice(notice);
+    noticeTimerRef.current = window.setTimeout(() => setScanNotice(null), 2800);
+  }, []);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(noticeTimerRef.current);
+    },
+    []
+  );
 
   const loadProducts = useCallback(async () => {
     try {
@@ -91,35 +106,59 @@ export default function PosScanner({ onOrderCreated }) {
     };
   }, []);
 
-  const addProductToCart = useCallback((product) => {
-    const result = upsertOrderItem(cartRef.current, product, toCartItem);
-    const name = result.name || product.name || 'Product';
+  const addProductToCart = useCallback(
+    (product) => {
+      const result = upsertOrderItem(cartRef.current, product, toCartItem);
+      const name = result.name || product.name || 'Product';
+      const size = product.size || '';
 
-    if (!result.ok) {
-      setScanState('error');
-      if (result.reason === 'inactive') {
-        toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
-      } else if (result.reason === 'out_of_stock') {
-        toastError('Out of stock', `${name} is out of stock.`);
-      } else if (result.reason === 'stock_limit') {
-        toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
-      } else {
-        toastError('Scan failed', `${name} could not be added to the order.`);
+      if (!result.ok) {
+        setScanState('error');
+        if (result.reason === 'inactive') {
+          showNotice({ type: 'error', title: 'Product inactive', text: `${name} is inactive and cannot be sold.` });
+        } else if (result.reason === 'out_of_stock') {
+          showNotice({ type: 'error', title: 'Out of Stock', text: `${name} is out of stock.` });
+        } else if (result.reason === 'stock_limit') {
+          showNotice({
+            type: 'error',
+            title: `Only ${result.stock} units available`,
+            text: `Cannot add more ${name} — ${result.stock} in stock.`,
+          });
+        } else {
+          showNotice({ type: 'error', title: 'Scan failed', text: `${name} could not be added to the order.` });
+        }
+        focusInput();
+        return;
       }
-      return;
-    }
 
-    setCart(result.items);
-    setScanState('success');
+      setCart(result.items);
+      setScanState('success');
+      showNotice({
+        type: 'success',
+        title: result.added ? 'Added to Cart' : 'Quantity updated',
+        name,
+        size,
+        price: Number(product.price) || 0,
+        stock: result.stock,
+        quantity: result.quantity,
+      });
+      focusInput();
+    },
+    [focusInput, showNotice]
+  );
 
-    if (result.stock <= LOW_STOCK_THRESHOLD) {
-      toastWarning('Low stock', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} left for ${name}.`);
-    } else if (result.added) {
-      toastSuccess('Product added', `${name} — ${formatRs(product.price)}`);
-    } else {
-      toastSuccess('Quantity updated', `${name} × ${result.quantity}`);
-    }
-  }, []);
+  const handleNotFound = useCallback(
+    (code) => {
+      setScanState('error');
+      showNotice({
+        type: 'error',
+        title: 'Product Not Found',
+        text: `Barcode:\n${code}\nThis barcode is not assigned to any product.`,
+      });
+      focusInput();
+    },
+    [focusInput, showNotice]
+  );
 
   const handleManualAdd = () => {
     const product = products.find((entry) => String(entry._id) === String(manualProductId));
@@ -138,7 +177,7 @@ export default function PosScanner({ onOrderCreated }) {
   const completeOrder = async () => {
     if (completing) return;
     if (!cart.length) {
-      Swal.fire({ icon: 'warning', title: 'Empty cart', text: 'Scan or add at least one product first.' });
+      showNotice({ type: 'error', title: 'Empty cart', text: 'Scan or add at least one product first.' });
       focusInput();
       return;
     }
@@ -157,7 +196,10 @@ export default function PosScanner({ onOrderCreated }) {
       confirmButtonText: 'Complete Sale',
       cancelButtonText: 'Back',
     });
-    if (!confirm.isConfirmed) return;
+    if (!confirm.isConfirmed) {
+      focusInput();
+      return;
+    }
 
     try {
       setCompleting(true);
@@ -170,18 +212,11 @@ export default function PosScanner({ onOrderCreated }) {
         status: 'delivered',
         items: cart.map((item) => ({
           productId: item.productId,
-          productName: item.productName,
-          brand: item.brand,
-          category: item.category,
-          description: item.description,
-          image: item.image,
-          barcode: item.barcode,
           quantity: item.quantity,
-          price: item.price,
         })),
       };
       await createResource('/orders', payload);
-      toastSuccess('Order completed', `Total ${formatRs(total)} — stock updated.`);
+      showNotice({ type: 'success', title: 'Sale completed', text: `Total ${formatRs(total)} — stock updated.` });
       setCart([]);
       setDiscount(0);
       setNotes('');
@@ -217,7 +252,7 @@ export default function PosScanner({ onOrderCreated }) {
             </span>
             <div>
               <h2 className="text-base font-semibold panel-title">Barcode Point of Sale</h2>
-              <p className="text-xs panel-muted">Scan a barcode to add products — rescan to increase quantity</p>
+              <p className="text-xs panel-muted">Scan → add to cart → scan again. Checkout when ready.</p>
             </div>
           </div>
           <span
@@ -231,14 +266,17 @@ export default function PosScanner({ onOrderCreated }) {
           </span>
         </div>
 
-        <div className="mt-3.5 flex flex-col gap-2 lg:flex-row lg:items-center">
+        <div className="mt-3.5 flex flex-col gap-2 lg:flex-row lg:items-stretch">
           <BarcodeScanInput
             inputRef={inputRef}
             ringClass={ringClass}
             onProductFound={addProductToCart}
+            onNotFound={handleNotFound}
             onScanStateChange={setScanState}
             captureGlobalScans
-            placeholder="Scan barcode here — or type the number and press Enter"
+            notifyErrors={false}
+            placeholder="Scan barcode or enter barcode manually"
+            inputClassName="!h-12 text-base"
           />
 
           <select
@@ -251,7 +289,8 @@ export default function PosScanner({ onOrderCreated }) {
             {products.map((product) => (
               <option key={product._id} value={product._id}>
                 {product.name}
-                {product.brand ? ` · ${product.brand}` : ''} — {formatRs(product.price)}
+                {product.brand ? ` · ${product.brand}` : ''}
+                {product.size ? ` · ${product.size}` : ''} — {formatRs(product.price)}
                 {Number(product.stock) === 0
                   ? ' (Out of stock)'
                   : Number(product.stock) <= LOW_STOCK_THRESHOLD
@@ -272,99 +311,154 @@ export default function PosScanner({ onOrderCreated }) {
             Add to cart
           </button>
         </div>
+
+        {scanNotice ? (
+          <div
+            className={`mt-3 rounded-xl border px-4 py-3 text-sm ${
+              scanNotice.type === 'success'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200'
+                : 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-200'
+            }`}
+            role="status"
+          >
+            <p className="font-semibold">
+              {scanNotice.type === 'success' ? '✓ ' : ''}
+              {scanNotice.title}
+            </p>
+            {scanNotice.name ? (
+              <p className="mt-0.5">
+                {scanNotice.name}
+                {scanNotice.size ? ` · ${scanNotice.size}` : ''}
+                {scanNotice.quantity > 1 ? ` · Qty ${scanNotice.quantity}` : ''}
+              </p>
+            ) : null}
+            {scanNotice.price != null && scanNotice.type === 'success' ? (
+              <p className="mt-0.5">
+                {formatRs(scanNotice.price)}
+                {scanNotice.stock != null ? ` · Stock: ${scanNotice.stock}` : ''}
+              </p>
+            ) : null}
+            {scanNotice.text ? (
+              <p className="mt-0.5 whitespace-pre-line opacity-90">{scanNotice.text}</p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {cart.length ? (
         <div className="grid gap-0 md:grid-cols-[1fr_320px]">
           <div className="md:border-r divider-border">
-            <ul className="max-h-[420px] space-y-2 overflow-y-auto p-4 sm:p-5">
-              {cart.map((item) => (
-                <li key={item.productId} className="flex gap-3 rounded-xl border divider-border bg-[var(--surface)] p-3 transition-shadow hover:shadow-sm">
-                  <ProductImage src={item.image} alt={item.productName} className="h-16 w-16" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold panel-title">{item.productName}</p>
-                        <p className="truncate text-xs panel-muted">
-                          {[item.brand, item.category].filter(Boolean).join(' · ') || 'Perfume'}
-                          {item.barcode ? ` · ${item.barcode}` : ''}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setCart((prev) => prev.filter((it) => it.productId !== item.productId))}
-                        className="rounded-md p-1 text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
-                        aria-label={`Remove ${item.productName}`}
-                      >
-                        <FiX size={16} />
-                      </button>
-                    </div>
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold text-[var(--primary)]">{formatRs(item.price)}</p>
-                      <p
-                        className={`text-[11px] ${
-                          item.stock - item.quantity <= LOW_STOCK_THRESHOLD ? 'text-amber-600' : 'panel-muted'
-                        }`}
-                      >
-                        {item.stock} in stock
-                      </p>
-                    </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="inline-flex items-center overflow-hidden rounded-lg border divider-border">
+            <div className="max-h-[460px] overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead className="sticky top-0 bg-[var(--surface-soft)] text-left text-xs uppercase tracking-wide panel-muted">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold">Product</th>
+                    <th className="px-3 py-2.5 font-semibold">Size</th>
+                    <th className="px-3 py-2.5 font-semibold">Qty</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Price</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Total</th>
+                    <th className="px-3 py-2.5" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.map((item) => (
+                    <tr key={item.productId} className="border-t divider-border">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <ProductImage src={item.image} alt={item.productName} className="h-12 w-12" />
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold panel-title">{item.productName}</p>
+                            <p className="truncate text-xs panel-muted">{item.brand || 'Perfume'}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 panel-muted">{item.size || '—'}</td>
+                      <td className="px-3 py-3">
+                        <div className="inline-flex items-center overflow-hidden rounded-lg border divider-border">
+                          <button
+                            type="button"
+                            className="flex h-8 w-8 items-center justify-center text-gray-600 transition hover:bg-[var(--surface-soft)] disabled:opacity-40 dark:text-gray-300"
+                            disabled={item.quantity <= 1}
+                            onClick={() =>
+                              setCart((prev) =>
+                                prev.map((it) =>
+                                  it.productId === item.productId ? { ...it, quantity: Math.max(1, it.quantity - 1) } : it
+                                )
+                              )
+                            }
+                            aria-label="Decrease quantity"
+                          >
+                            <FiMinus size={14} />
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max={item.stock}
+                            value={item.quantity}
+                            className="h-8 w-12 border-x divider-border bg-[var(--surface)] text-center text-sm outline-none"
+                            onChange={(e) => {
+                              const qty = Math.max(1, Number(e.target.value) || 1);
+                              if (qty > item.stock) {
+                                showNotice({
+                                  type: 'error',
+                                  title: `Only ${item.stock} units available`,
+                                  text: item.productName,
+                                });
+                              }
+                              setCart((prev) =>
+                                prev.map((it) =>
+                                  it.productId === item.productId ? { ...it, quantity: Math.min(item.stock, qty) } : it
+                                )
+                              );
+                            }}
+                            aria-label="Quantity"
+                          />
+                          <button
+                            type="button"
+                            className="flex h-8 w-8 items-center justify-center text-gray-600 transition hover:bg-[var(--surface-soft)] disabled:opacity-40 dark:text-gray-300"
+                            disabled={item.quantity >= item.stock}
+                            onClick={() => {
+                              if (item.quantity >= item.stock) {
+                                showNotice({
+                                  type: 'error',
+                                  title: `Only ${item.stock} units available`,
+                                  text: item.productName,
+                                });
+                                return;
+                              }
+                              setCart((prev) =>
+                                prev.map((it) =>
+                                  it.productId === item.productId
+                                    ? { ...it, quantity: Math.min(item.stock, it.quantity + 1) }
+                                    : it
+                                )
+                              );
+                            }}
+                            aria-label="Increase quantity"
+                          >
+                            <FiPlus size={14} />
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-right">{formatRs(item.price)}</td>
+                      <td className="px-3 py-3 text-right font-semibold panel-title">
+                        {formatRs(item.price * item.quantity)}
+                      </td>
+                      <td className="px-3 py-3 text-right">
                         <button
                           type="button"
-                          className="flex h-8 w-8 items-center justify-center text-gray-600 transition hover:bg-[var(--surface-soft)] disabled:opacity-40 dark:text-gray-300"
-                          disabled={item.quantity <= 1}
-                          onClick={() =>
-                            setCart((prev) =>
-                              prev.map((it) =>
-                                it.productId === item.productId ? { ...it, quantity: Math.max(1, it.quantity - 1) } : it
-                              )
-                            )
-                          }
-                          aria-label="Decrease quantity"
+                          onClick={() => setCart((prev) => prev.filter((it) => it.productId !== item.productId))}
+                          className="rounded-md p-1 text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
+                          aria-label={`Remove ${item.productName}`}
                         >
-                          <FiMinus size={14} />
+                          <FiX size={16} />
                         </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max={item.stock}
-                          value={item.quantity}
-                          className="h-8 w-12 border-x divider-border bg-[var(--surface)] text-center text-sm outline-none"
-                          onChange={(e) => {
-                            const qty = Math.max(1, Number(e.target.value) || 1);
-                            setCart((prev) =>
-                              prev.map((it) =>
-                                it.productId === item.productId ? { ...it, quantity: Math.min(item.stock, qty) } : it
-                              )
-                            );
-                          }}
-                          aria-label="Quantity"
-                        />
-                        <button
-                          type="button"
-                          className="flex h-8 w-8 items-center justify-center text-gray-600 transition hover:bg-[var(--surface-soft)] disabled:opacity-40 dark:text-gray-300"
-                          disabled={item.quantity >= item.stock}
-                          onClick={() =>
-                            setCart((prev) =>
-                              prev.map((it) =>
-                                it.productId === item.productId
-                                  ? { ...it, quantity: Math.min(item.stock, it.quantity + 1) }
-                                  : it
-                              )
-                            )
-                          }
-                          aria-label="Increase quantity"
-                        >
-                          <FiPlus size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="flex flex-col border-t divider-border p-4 sm:p-5 md:border-t-0">
@@ -432,7 +526,7 @@ export default function PosScanner({ onOrderCreated }) {
                 </div>
               ) : null}
               <div className="flex justify-between pt-1 text-base font-bold panel-title">
-                <span>Total</span>
+                <span>Grand Total</span>
                 <span>{formatRs(total)}</span>
               </div>
             </div>
@@ -443,7 +537,7 @@ export default function PosScanner({ onOrderCreated }) {
               className="btn-primary mt-4 inline-flex w-full items-center justify-center gap-2"
             >
               <FiCheckCircle size={16} />
-              {completing ? 'Completing order…' : 'Complete order'}
+              {completing ? 'Completing order…' : 'Checkout'}
             </button>
           </div>
         </div>
@@ -459,13 +553,13 @@ export default function PosScanner({ onOrderCreated }) {
             </span>
           </div>
           <div>
-            <p className="text-sm font-semibold panel-title">Your cart is empty</p>
+            <p className="text-sm font-semibold panel-title">Ready to scan</p>
             <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed panel-muted">
-              Scan a barcode above or pick a product from the catalog dropdown to start a sale.
+              Point a USB or Bluetooth HID scanner at the field above, or type a barcode and press Enter.
             </p>
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-soft)] px-3 py-1 text-[11px] font-medium panel-muted">
-            <LuKeyboard size={16} /> USB scanners work like keyboards — just scan
+            <LuKeyboard size={16} /> Scanner works like a keyboard — no extra software
           </span>
         </div>
       )}

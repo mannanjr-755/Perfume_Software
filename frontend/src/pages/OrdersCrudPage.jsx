@@ -40,6 +40,7 @@ function toOrderItem(product, quantity = 1) {
     description: product.description || '',
     image: product.image || '',
     barcode: product.barcode || '',
+    size: product.size || '',
     quantity: Math.max(1, Number(quantity) || 1),
     price: Number(product.price || 0),
   };
@@ -321,6 +322,7 @@ export default function OrdersCrudPage({
             onProductFound={addProductFromScan}
             placeholder="Scan barcode to add product…"
             autoFocus={false}
+            captureGlobalScans
           />
           <select
             className="input-field"
@@ -365,9 +367,15 @@ export default function OrdersCrudPage({
                       className="input-field h-8 w-16 px-2"
                       value={item.quantity}
                       onChange={(e) => {
+                        const catalog = catalogProducts.find((entry) => String(entry._id) === String(item.productId));
+                        const stock = Number(catalog?.stock ?? item.stock) || 0;
                         const quantity = Math.max(1, Number(e.target.value) || 1);
+                        const nextQty = stock > 0 ? Math.min(stock, quantity) : quantity;
+                        if (stock > 0 && quantity > stock) {
+                          toastWarning('Stock limit', `Only ${stock} unit${stock === 1 ? '' : 's'} available.`);
+                        }
                         setOrderItems(orderItems.map((row, rowIndex) => (
-                          rowIndex === index ? { ...row, quantity } : row
+                          rowIndex === index ? { ...row, quantity: nextQty } : row
                         )));
                       }}
                     />

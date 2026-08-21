@@ -53,6 +53,7 @@ async function seed() {
       stock: 50,
       description: 'A woody aromatic fragrance for men.',
       image: '/products/bleu-de-chanel.png',
+      size: '100ml',
       barcode: '8901000000011',
       status: 'active',
     },
@@ -64,6 +65,7 @@ async function seed() {
       stock: 40,
       description: 'Fresh and spicy signature scent.',
       image: '/products/sauvage.png',
+      size: '100ml',
       barcode: '8901000000028',
       status: 'active',
     },
@@ -75,6 +77,7 @@ async function seed() {
       stock: 22,
       description: 'Warm, smoky oud with a luxurious finish.',
       image: '/products/tom-ford.png',
+      size: '50ml',
       barcode: '8901000000035',
       status: 'active',
     },
@@ -86,6 +89,7 @@ async function seed() {
       stock: 18,
       description: 'Rich Arabic oud with gold-toned depth.',
       image: '/products/oud.png',
+      size: '100ml',
       barcode: '8901000000042',
       status: 'active',
     },
@@ -97,6 +101,7 @@ async function seed() {
       stock: 28,
       description: 'Elegant floral fragrance with a crystal finish.',
       image: '/products/floral.png',
+      size: '100ml',
       barcode: '8901000000059',
       status: 'active',
     },
@@ -108,8 +113,8 @@ async function seed() {
       await query(
         `UPDATE products SET
            brand = $1, category = $2, price = $3, stock = $4, description = $5,
-           image = $6, barcode = $7, status = $8, updated_at = now()
-         WHERE id = $9`,
+           image = $6, barcode = $7, status = $8, size = $9, updated_at = now()
+         WHERE id = $10`,
         [
           item.brand,
           item.category,
@@ -119,13 +124,14 @@ async function seed() {
           item.image,
           item.barcode,
           item.status,
+          item.size || '100ml',
           existing.rows[0].id,
         ]
       );
     } else {
       await query(
-        `INSERT INTO products (name, brand, category, price, stock, description, image, barcode, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        `INSERT INTO products (name, brand, category, price, stock, description, image, barcode, status, size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           item.name,
           item.brand,
@@ -136,6 +142,7 @@ async function seed() {
           item.image,
           item.barcode,
           item.status,
+          item.size || '100ml',
         ]
       );
     }
