@@ -22,6 +22,25 @@ const categoryController = createCrudController(categoryService, 'categories');
 const brandController = createCrudController(brandService, 'brands');
 
 router.get('/products', productController.list);
+
+router.get('/products/barcode/:barcode', async (req, res, next) => {
+  try {
+    const product = await productService.findByBarcode(req.params.barcode);
+    return success(res, 'Product found by barcode', product);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/products/barcode/generate', async (_req, res, next) => {
+  try {
+    const barcode = await productService.nextBarcode();
+    return success(res, 'Barcode generated', { barcode });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/products/:id', productController.getOne);
 router.post('/products', productController.create);
 router.put('/products/:id', productController.update);
@@ -50,24 +69,6 @@ router.get('/brands/:id', brandController.getOne);
 router.post('/brands', brandController.create);
 router.put('/brands/:id', brandController.update);
 router.delete('/brands/:id', brandController.remove);
-
-router.get('/products/barcode/:barcode', async (req, res, next) => {
-  try {
-    const product = await productService.findByBarcode(req.params.barcode);
-    return success(res, 'Product found by barcode', product);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/products/barcode/generate', async (_req, res, next) => {
-  try {
-    const barcode = await productService.nextBarcode();
-    return success(res, 'Barcode generated', { barcode });
-  } catch (error) {
-    next(error);
-  }
-});
 
 router.post('/products/:id/generate-barcode', async (req, res, next) => {
   try {

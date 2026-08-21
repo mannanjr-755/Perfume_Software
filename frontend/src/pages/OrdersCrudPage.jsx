@@ -22,7 +22,10 @@ import {
 } from '../services/resourceService.js';
 import { getErrorMessage } from '../services/api.js';
 import ProductImage from '../components/ui/ProductImage.jsx';
+import BarcodeScanInput from '../components/BarcodeScanInput.jsx';
 import { formatMoney } from '../utils/currency.js';
+import { upsertOrderItem } from '../utils/orderCart.js';
+import { toastSuccess, toastWarning, toastError } from '../utils/toast.js';
 
 function isFullWidth(field) {
   return Boolean(field.fullWidth || field.type === 'textarea' || field.type === 'order-items');
@@ -250,10 +253,6 @@ export default function OrdersCrudPage({
 
     if (field.type === 'order-items') {
       const orderItems = Array.isArray(form[field.name]) ? form[field.name] : [];
-      const available = catalogProducts.filter(
-        (product) => !orderItems.some((item) => String(item.productId) === String(product._id))
-      );
-
       const setOrderItems = (nextItems) => {
         setForm((current) => ({
           ...current,
@@ -265,12 +264,55 @@ export default function OrdersCrudPage({
       const addProduct = (productId) => {
         const product = catalogProducts.find((entry) => String(entry._id) === String(productId));
         if (!product) return;
-        setOrderItems([...orderItems, toOrderItem(product, 1)]);
+        const result = upsertOrderItem(orderItems, product, (entry) => toOrderItem(entry, 1));
+        if (!result.ok) {
+          const name = result.name || product.name || 'Product';
+          if (result.reason === 'inactive') {
+            toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
+          } else if (result.reason === 'out_of_stock') {
+            toastError('Out of stock', `${name} is out of stock.`);
+          } else if (result.reason === 'stock_limit') {
+            toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
+          }
+          return;
+        }
+        setOrderItems(result.items);
+        if (result.added) {
+          toastSuccess('Product added', result.name);
+        } else {
+          toastSuccess('Quantity updated', `${result.name} × ${result.quantity}`);
+        }
         setSelectedProductId('');
+      };
+
+      const addProductFromScan = (product) => {
+        const result = upsertOrderItem(orderItems, product, (entry) => toOrderItem(entry, 1));
+        if (!result.ok) {
+          const name = result.name || product.name || 'Product';
+          if (result.reason === 'inactive') {
+            toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
+          } else if (result.reason === 'out_of_stock') {
+            toastError('Out of stock', `${name} is out of stock.`);
+          } else if (result.reason === 'stock_limit') {
+            toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
+          }
+          return;
+        }
+        setOrderItems(result.items);
+        if (result.added) {
+          toastSuccess('Product added', `${result.name} — ${formatMoney(product.price)}`);
+        } else {
+          toastSuccess('Quantity updated', `${result.name} × ${result.quantity}`);
+        }
       };
 
       return (
         <div className="space-y-2">
+          <BarcodeScanInput
+            onProductFound={addProductFromScan}
+            placeholder="Scan barcode to add product…"
+            autoFocus={false}
+          />
           <select
             className="input-field"
             value={selectedProductId}
@@ -281,7 +323,7 @@ export default function OrdersCrudPage({
             }}
           >
             <option value="">Select a product to add</option>
-            {available.map((product) => (
+            {catalogProducts.map((product) => (
               <option key={product._id} value={product._id}>
                 {product.name} {product.brand ? `· ${product.brand}` : ''} {product.category ? `· ${product.category}` : ''} — {formatMoney(product.price)}
               </option>
@@ -332,7 +374,7 @@ export default function OrdersCrudPage({
               ))}
             </div>
           ) : (
-            <p className="text-xs panel-muted">Select a product above. It will be added to this order immediately.</p>
+            <p className="text-xs panel-muted">Scan a barcode or select a product above to add it to this order.</p>
           )}
         </div>
       );

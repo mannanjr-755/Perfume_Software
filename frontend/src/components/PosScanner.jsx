@@ -3,11 +3,12 @@ import Swal from 'sweetalert2';
 import { LuKeyboard, LuScanBarcode } from 'react-icons/lu';
 import { FiCheckCircle, FiMinus, FiPlus, FiShoppingCart, FiX } from 'react-icons/fi';
 import ProductImage from './ui/ProductImage.jsx';
-import LoadingSpinner from './ui/LoadingSpinner.jsx';
+import BarcodeScanInput from './BarcodeScanInput.jsx';
 import api, { getErrorMessage } from '../services/api.js';
-import { fetchResource, createResource, fetchProductByBarcode } from '../services/resourceService.js';
+import { fetchResource, createResource } from '../services/resourceService.js';
 import { formatRs } from '../utils/currency.js';
-import { normalizeBarcode, LOW_STOCK_THRESHOLD } from '../utils/barcode.js';
+import { LOW_STOCK_THRESHOLD } from '../utils/barcode.js';
+import { upsertOrderItem } from '../utils/orderCart.js';
 import { toastSuccess, toastError, toastWarning } from '../utils/toast.js';
 
 const paymentMethods = [
@@ -36,10 +37,8 @@ function toCartItem(product) {
 export default function PosScanner({ onOrderCreated }) {
   const [products, setProducts] = useState([]);
   const [taxRate, setTaxRate] = useState(0);
-  const [barcodeInput, setBarcodeInput] = useState('');
   const [manualProductId, setManualProductId] = useState('');
   const [cart, setCart] = useState([]);
-  const [searching, setSearching] = useState(false);
   const [scanState, setScanState] = useState('idle');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -49,18 +48,7 @@ export default function PosScanner({ onOrderCreated }) {
   const [completing, setCompleting] = useState(false);
 
   const inputRef = useRef(null);
-  const barcodeInputRef = useRef('');
-  const manualProductIdRef = useRef('');
   const cartRef = useRef(cart);
-  const searchingRef = useRef(false);
-
-  useEffect(() => {
-    barcodeInputRef.current = barcodeInput;
-  }, [barcodeInput]);
-
-  useEffect(() => {
-    manualProductIdRef.current = manualProductId;
-  }, [manualProductId]);
 
   useEffect(() => {
     cartRef.current = cart;
@@ -104,110 +92,40 @@ export default function PosScanner({ onOrderCreated }) {
   }, []);
 
   const addProductToCart = useCallback((product) => {
-    const name = product.name || 'Product';
-    const stock = Number(product.stock) || 0;
+    const result = upsertOrderItem(cartRef.current, product, toCartItem);
+    const name = result.name || product.name || 'Product';
 
-    if (product.status && product.status !== 'active') {
+    if (!result.ok) {
       setScanState('error');
-      toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
-      return;
-    }
-    if (stock <= 0) {
-      setScanState('error');
-      toastError('Out of stock', `${name} is out of stock.`);
-      return;
-    }
-
-    const index = cartRef.current.findIndex((item) => String(item.productId) === String(product._id));
-    if (index >= 0) {
-      const existing = cartRef.current[index];
-      const nextQty = existing.quantity + 1;
-      if (nextQty > stock) {
-        setScanState('error');
-        toastWarning('Stock limit', `Only ${stock} unit${stock === 1 ? '' : 's'} of ${name} available.`);
-        return;
-      }
-      setCart((prev) => prev.map((item, i) => (i === index ? { ...item, quantity: nextQty } : item)));
-      setScanState('success');
-      if (stock <= LOW_STOCK_THRESHOLD) {
-        toastWarning('Low stock', `Only ${stock} unit${stock === 1 ? '' : 's'} left for ${name}.`);
-      } else {
-        toastSuccess('Quantity updated', `${name} × ${nextQty}`);
+      if (result.reason === 'inactive') {
+        toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
+      } else if (result.reason === 'out_of_stock') {
+        toastError('Out of stock', `${name} is out of stock.`);
+      } else if (result.reason === 'stock_limit') {
+        toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
       }
       return;
     }
 
-    setCart((prev) => [...prev, toCartItem(product)]);
+    setCart(result.items);
     setScanState('success');
-    if (stock <= LOW_STOCK_THRESHOLD) {
-      toastWarning('Low stock', `Only ${stock} unit${stock === 1 ? '' : 's'} left for ${name}.`);
-    } else {
+
+    if (result.stock <= LOW_STOCK_THRESHOLD) {
+      toastWarning('Low stock', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} left for ${name}.`);
+    } else if (result.added) {
       toastSuccess('Product added', `${name} — ${formatRs(product.price)}`);
+    } else {
+      toastSuccess('Quantity updated', `${name} × ${result.quantity}`);
     }
   }, []);
 
-  const submitScan = useCallback(async () => {
-    if (searchingRef.current) return;
-    const code = normalizeBarcode(barcodeInputRef.current);
-    if (!code) {
-      focusInput();
-      return;
-    }
-    searchingRef.current = true;
-    setSearching(true);
-    setScanState('idle');
-    try {
-      const res = await fetchProductByBarcode(code);
-      addProductToCart(res.data || res);
-    } catch {
-      setScanState('error');
-      toastError('Barcode not found', `No product matches barcode "${code}".`);
-    } finally {
-      searchingRef.current = false;
-      setSearching(false);
-      setBarcodeInput('');
-      focusInput();
-      window.setTimeout(() => setScanState('idle'), 1800);
-    }
-  }, [addProductToCart, focusInput]);
-
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      const el = document.activeElement;
-      if (el && el !== document.body && el.tagName !== 'BODY') return;
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        submitScan();
-        return;
-      }
-      if (event.key.length === 1) {
-        event.preventDefault();
-        setBarcodeInput((prev) => (prev + event.key).slice(0, 64));
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [submitScan]);
-
   const handleManualAdd = () => {
-    const product = products.find((entry) => String(entry._id) === String(manualProductIdRef.current));
+    const product = products.find((entry) => String(entry._id) === String(manualProductId));
     if (product) {
       addProductToCart(product);
       setManualProductId('');
     }
     focusInput();
-  };
-
-  const handleFormSubmit = (e) => {
-    e.preventDefault();
-    if (barcodeInputRef.current.trim()) {
-      submitScan();
-    } else if (manualProductIdRef.current) {
-      handleManualAdd();
-    } else {
-      focusInput();
-    }
   };
 
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
@@ -263,7 +181,6 @@ export default function PosScanner({ onOrderCreated }) {
       await createResource('/orders', payload);
       toastSuccess('Order completed', `Total ${formatRs(total)} — stock updated.`);
       setCart([]);
-      setBarcodeInput('');
       setDiscount(0);
       setNotes('');
       setCustomerName('');
@@ -288,8 +205,6 @@ export default function PosScanner({ onOrderCreated }) {
         ? 'ring-2 ring-red-500/60'
         : '';
 
-  const canAdd = Boolean(barcodeInput.trim()) || Boolean(manualProductId);
-
   return (
     <section className="card-surface overflow-hidden">
       <div className="border-b divider-border px-4 py-3.5 sm:px-5">
@@ -300,7 +215,7 @@ export default function PosScanner({ onOrderCreated }) {
             </span>
             <div>
               <h2 className="text-base font-semibold panel-title">Barcode Point of Sale</h2>
-              <p className="text-xs panel-muted">Scan or pick a product to ring up a sale</p>
+              <p className="text-xs panel-muted">Scan a barcode to add products — rescan to increase quantity</p>
             </div>
           </div>
           <span
@@ -314,39 +229,15 @@ export default function PosScanner({ onOrderCreated }) {
           </span>
         </div>
 
-        <form onSubmit={handleFormSubmit} className="mt-3.5 flex flex-col gap-2 lg:flex-row lg:items-center">
-          <div className={`relative flex-1 rounded-lg ${ringClass}`}>
-            <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-[var(--text-muted)]">
-              <LuScanBarcode size={18} />
-            </span>
-            <input
-              ref={inputRef}
-              type="text"
-              inputMode="numeric"
-              autoFocus
-              autoComplete="off"
-              value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value)}
-              placeholder="Scan barcode here — or type the number and press Enter"
-              className={`input-field pl-10 pr-10 ${scanState === 'idle' ? 'barcode-ready' : ''} ${
-                scanState === 'success'
-                  ? 'border-emerald-500'
-                  : scanState === 'error'
-                    ? 'border-red-500'
-                    : ''
-              }`}
-              aria-label="Scan barcode"
-            />
-            {searching ? (
-              <span className="absolute inset-y-0 right-3 flex items-center">
-                <LoadingSpinner size="sm" />
-              </span>
-            ) : (
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                <span className="h-2 w-2 rounded-full bg-[var(--primary)]" />
-              </span>
-            )}
-          </div>
+        <div className="mt-3.5 flex flex-col gap-2 lg:flex-row lg:items-center">
+          <BarcodeScanInput
+            inputRef={inputRef}
+            ringClass={ringClass}
+            onProductFound={addProductToCart}
+            onScanStateChange={setScanState}
+            captureGlobalScans
+            placeholder="Scan barcode here — or type the number and press Enter"
+          />
 
           <select
             className="input-field lg:w-64"
@@ -369,21 +260,16 @@ export default function PosScanner({ onOrderCreated }) {
           </select>
 
           <button
-            type="submit"
+            type="button"
+            onClick={handleManualAdd}
             className="btn-primary inline-flex shrink-0 items-center justify-center gap-2"
-            disabled={searching || !canAdd}
-            title={manualProductId ? 'Add selected product' : 'Add scanned barcode'}
+            disabled={!manualProductId}
+            title="Add selected product"
           >
-            {searching ? (
-              'Searching…'
-            ) : (
-              <>
-                <FiShoppingCart size={16} />
-                Add to cart
-              </>
-            )}
+            <FiShoppingCart size={16} />
+            Add to cart
           </button>
-        </form>
+        </div>
       </div>
 
       {cart.length ? (

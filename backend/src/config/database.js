@@ -22,8 +22,11 @@ export async function connectDatabase() {
   pool = new Pool({
     connectionString: env.databaseUrl,
     max: 5,
-    connectionTimeoutMillis: 10000,
-    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 20000,
+    idleTimeoutMillis: 60000,
+  });
+  pool.on('error', (error) => {
+    console.error('[DB] Pool client error (connection recycled):', error.message);
   });
 
   await pool.query('SELECT 1');

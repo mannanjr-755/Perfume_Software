@@ -90,20 +90,21 @@ async function maybeNotifyLowStock(product) {
 async function notifyOrderEvent(kind, order) {
   const settings = await getSettings();
   if (settings?.notifyNewOrder === false && kind !== 'cancelled') return;
+  const orderRef = order.orderNumber || `#${order._id}`;
   let title;
   let message;
   let type = 'info';
   if (kind === 'created') {
     title = 'New order';
-    message = `Order #${String(order._id).slice(-8).toUpperCase()} for ${order.customerName} — ${order.total}`;
+    message = `${orderRef} for ${order.customerName} — ${order.total}`;
     type = 'info';
   } else if (kind === 'delivered') {
     title = 'Order completed';
-    message = `Order #${String(order._id).slice(-8).toUpperCase()} for ${order.customerName} was completed.`;
+    message = `${orderRef} for ${order.customerName} was completed.`;
     type = 'success';
   } else if (kind === 'cancelled') {
     title = 'Order cancelled';
-    message = `Order #${String(order._id).slice(-8).toUpperCase()} for ${order.customerName} was cancelled.`;
+    message = `${orderRef} for ${order.customerName} was cancelled.`;
     type = 'error';
   }
   if (!title) return;

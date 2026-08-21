@@ -34,4 +34,11 @@ async function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
+process.on('unhandledRejection', (reason) => {
+  console.error('[API] Unhandled promise rejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[API] Uncaught exception:', error?.message || error);
+});
+
 start();
