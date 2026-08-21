@@ -267,7 +267,7 @@ export default function PosScanner({ onOrderCreated }) {
         </div>
 
         <div className="mt-3.5 flex flex-col gap-2 lg:flex-row lg:items-stretch">
-          <BarcodeScanInput
+          {/* <BarcodeScanInput
             inputRef={inputRef}
             ringClass={ringClass}
             onProductFound={addProductToCart}
@@ -277,7 +277,18 @@ export default function PosScanner({ onOrderCreated }) {
             notifyErrors={false}
             placeholder="Scan barcode or enter barcode manually"
             inputClassName="!h-12 text-base"
-          />
+          /> */}
+          <BarcodeScanInput
+  inputRef={inputRef}
+  ringClass={ringClass}
+  onProductFound={addProductToCart}
+  onNotFound={handleNotFound}
+  onScanStateChange={setScanState}
+  captureGlobalScans
+  notifyErrors={false}
+  placeholder="Scan barcode or enter barcode manually"
+  inputClassName="!h-12 text-base"
+/>
 
           <select
             className="input-field lg:w-64"
