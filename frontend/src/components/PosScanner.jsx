@@ -103,6 +103,8 @@ export default function PosScanner({ onOrderCreated }) {
         toastError('Out of stock', `${name} is out of stock.`);
       } else if (result.reason === 'stock_limit') {
         toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
+      } else {
+        toastError('Scan failed', `${name} could not be added to the order.`);
       }
       return;
     }

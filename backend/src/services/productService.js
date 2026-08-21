@@ -83,7 +83,7 @@ async function update(id, data) {
 async function findByBarcode(barcode) {
   const code = normalizeBarcode(barcode);
   if (!code) throw new AppError('Barcode cannot be empty', 400);
-  const res = await query('SELECT * FROM products WHERE barcode = $1', [code]);
+  const res = await query('SELECT * FROM products WHERE UPPER(TRIM(barcode)) = $1', [code]);
   if (!res.rows[0]) throw new AppError('No product found with this barcode', 404);
   return rowToDoc(res.rows[0]);
 }

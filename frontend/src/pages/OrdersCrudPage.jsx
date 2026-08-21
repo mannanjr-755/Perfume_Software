@@ -286,19 +286,28 @@ export default function OrdersCrudPage({
       };
 
       const addProductFromScan = (product) => {
-        const result = upsertOrderItem(orderItems, product, (entry) => toOrderItem(entry, 1));
-        if (!result.ok) {
-          const name = result.name || product.name || 'Product';
-          if (result.reason === 'inactive') {
+        let result;
+        setForm((current) => {
+          const currentItems = Array.isArray(current[field.name]) ? current[field.name] : [];
+          result = upsertOrderItem(currentItems, product, (entry) => toOrderItem(entry, 1));
+          if (!result.ok) return current;
+          return {
+            ...current,
+            [field.name]: result.items,
+            total: itemsTotal(result.items),
+          };
+        });
+        if (!result?.ok) {
+          const name = result?.name || product.name || 'Product';
+          if (result?.reason === 'inactive') {
             toastWarning('Product inactive', `${name} is inactive and cannot be sold.`);
-          } else if (result.reason === 'out_of_stock') {
+          } else if (result?.reason === 'out_of_stock') {
             toastError('Out of stock', `${name} is out of stock.`);
-          } else if (result.reason === 'stock_limit') {
+          } else if (result?.reason === 'stock_limit') {
             toastWarning('Stock limit', `Only ${result.stock} unit${result.stock === 1 ? '' : 's'} of ${name} available.`);
           }
           return;
         }
-        setOrderItems(result.items);
         if (result.added) {
           toastSuccess('Product added', `${result.name} — ${formatMoney(product.price)}`);
         } else {
