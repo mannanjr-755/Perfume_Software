@@ -317,9 +317,45 @@ import { getErrorMessage } from '../services/api.js';
 import { normalizeBarcode } from '../utils/barcode.js';
 import { toastError } from '../utils/toast.js';
 
+const SCANNER_CHAR_GAP_MS = 100;
+const BUFFER_RESET_MS = 500;
+const IDLE_SUBMIT_MS = 250;
 const MIN_BARCODE_LENGTH = 4;
 const MAX_BARCODE_LENGTH = 64;
-const SCAN_TIMEOUT = 250;
+
+function isTerminator(key) {
+  return (
+    key === 'Enter' ||
+    key === 'NumpadEnter' ||
+    key === 'Tab'
+  );
+}
+
+function isBarcodeChar(key) {
+  return (
+    typeof key === 'string' &&
+    key.length === 1 &&
+    key.charCodeAt(0) >= 32
+  );
+}
+
+function isEditableTarget(target) {
+  if (!target || target === document.body) {
+    return false;
+  }
+
+  const tag = target.tagName;
+
+  if (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT'
+  ) {
+    return true;
+  }
+
+  return Boolean(target.isContentEditable);
+}
 
 export default function BarcodeScanInput({
   onProductFound,
@@ -343,12 +379,21 @@ export default function BarcodeScanInput({
 
   const [searching, setSearching] = useState(false);
 
+  const searchingRef = useRef(false);
   const bufferRef = useRef('');
-  const timerRef = useRef(null);
-  const lookupBusyRef = useRef(false);
+  const lastKeyAtRef = useRef(0);
+  const idleTimerRef = useRef(null);
+  const statusTimerRef = useRef(null);
   const queueRef = useRef([]);
 
-  const setInputValue = useCallback(
+  /*
+   * Always keep latest lookup function.
+   * This avoids stale callback problems without putting
+   * lookupBarcode itself inside keyboard effect dependencies.
+   */
+  const lookupRef = useRef(null);
+
+  const setFieldValue = useCallback(
     (value) => {
       if (inputRef.current) {
         inputRef.current.value = value;
@@ -357,95 +402,161 @@ export default function BarcodeScanInput({
     [inputRef]
   );
 
-  const processBarcode = useCallback(
-    async (rawBarcode) => {
-      const barcode = normalizeBarcode(rawBarcode);
+  const lookupBarcode = useCallback(
+    async (rawCode) => {
+      const code = normalizeBarcode(String(rawCode || ''));
 
-      if (!barcode || barcode.length < MIN_BARCODE_LENGTH) {
+      if (!code || code.length < MIN_BARCODE_LENGTH) {
         return;
       }
 
-      if (lookupBusyRef.current) {
-        if (!queueRef.current.includes(barcode)) {
-          queueRef.current.push(barcode);
+      /*
+       * If another lookup is running,
+       * put the next barcode in queue.
+       */
+      if (searchingRef.current) {
+        if (!queueRef.current.includes(code)) {
+          queueRef.current.push(code);
         }
+
         return;
       }
 
-      lookupBusyRef.current = true;
+      searchingRef.current = true;
       setSearching(true);
+
+      window.clearTimeout(idleTimerRef.current);
+      window.clearTimeout(statusTimerRef.current);
+
+      bufferRef.current = '';
+
+      if (!keepValue) {
+        setFieldValue('');
+      }
+
       onScanStateChange?.('searching');
 
       try {
-        onCode?.(barcode);
+        /*
+         * Send scanned barcode to parent.
+         */
+        onCode?.(code);
 
+        /*
+         * VALUE MODE
+         *
+         * Used when barcode is being entered
+         * while creating/editing a product.
+         */
         if (mode === 'value') {
-          setInputValue(barcode);
+          setFieldValue(code);
           onScanStateChange?.('success');
           return;
         }
 
-        const response = await fetchProductByBarcode(barcode);
+        /*
+         * LOOKUP MODE
+         *
+         * Find product from backend.
+         */
+        const response = await fetchProductByBarcode(code);
 
-        // API response:
-        // { success: true, data: product }
+        /*
+         * Supports both:
+         *
+         * { data: product }
+         *
+         * and
+         *
+         * product
+         */
         const product = response?.data ?? response;
 
-        if (!product || (!product._id && !product.id && !product.name)) {
-          throw new Error('Product data was not returned by the server.');
+        if (
+          !product ||
+          (
+            product._id == null &&
+            product.id == null &&
+            !product.name
+          )
+        ) {
+          const error = new Error('Product not found');
+          error.status = 404;
+          throw error;
         }
 
+        /*
+         * VERY IMPORTANT:
+         *
+         * PosScanner.jsx has:
+         *
+         * onProductFound={addProductToCart}
+         *
+         * Therefore this sends the product directly
+         * to the existing cart logic.
+         */
         onProductFound?.(product);
-        onScanStateChange?.('success');
 
-        if (!keepValue) {
-          setInputValue('');
-        }
+        onScanStateChange?.('success');
       } catch (error) {
         onScanStateChange?.('error');
 
-        if (error?.status === 404) {
-          onNotFound?.(barcode);
+        const status = error?.status;
+
+        if (status === 404) {
+          onNotFound?.(code);
 
           if (notifyErrors && !onNotFound) {
             toastError(
               'Product Not Found',
-              `Barcode: ${barcode}\nThis barcode is not assigned to any product.`
+              `Barcode:\n${code}\nThis barcode is not assigned to any product.`
             );
           }
         } else if (notifyErrors) {
           toastError(
             'Scan Failed',
             getErrorMessage(error) ||
-              `Could not find product with barcode ${barcode}.`
+              `Could not look up barcode "${code}".`
           );
         }
       } finally {
-        lookupBusyRef.current = false;
+        searchingRef.current = false;
         setSearching(false);
 
         if (!keepValue) {
-          setInputValue('');
+          setFieldValue('');
         }
 
+        /*
+         * Keep scanner input focused.
+         */
         requestAnimationFrame(() => {
-          inputRef.current?.focus();
+          if (!disabled) {
+            inputRef.current?.focus();
+          }
         });
 
-        window.clearTimeout(timerRef.current);
-
-        window.setTimeout(() => {
+        /*
+         * Reset status.
+         */
+        statusTimerRef.current = window.setTimeout(() => {
           onScanStateChange?.('idle');
-        }, 1200);
+        }, 1000);
 
+        /*
+         * Process next queued scan.
+         */
         const nextBarcode = queueRef.current.shift();
 
         if (nextBarcode) {
-          processBarcode(nextBarcode);
+          window.setTimeout(() => {
+            lookupRef.current?.(nextBarcode);
+          }, 0);
         }
       }
     },
     [
+      disabled,
       inputRef,
       keepValue,
       mode,
@@ -454,163 +565,372 @@ export default function BarcodeScanInput({
       onNotFound,
       onProductFound,
       onScanStateChange,
-      processBarcode,
-      setInputValue,
+      setFieldValue,
     ]
   );
 
-  const submitBuffer = useCallback(() => {
-    window.clearTimeout(timerRef.current);
+  /*
+   * Always store latest lookup function.
+   */
+  lookupRef.current = lookupBarcode;
 
-    const barcode = normalizeBarcode(bufferRef.current);
+  /*
+   * Submit scanner buffer.
+   */
+  const flushBuffer = useCallback(() => {
+    window.clearTimeout(idleTimerRef.current);
+
+    const code = normalizeBarcode(bufferRef.current);
 
     bufferRef.current = '';
 
-    if (barcode.length >= MIN_BARCODE_LENGTH) {
-      processBarcode(barcode);
+    if (code.length >= MIN_BARCODE_LENGTH) {
+      lookupRef.current?.(code);
     }
-  }, [processBarcode]);
+  }, []);
 
-  const handleKeyDown = useCallback(
-    (event) => {
-      if (disabled) return;
+  /*
+   * Automatically submit scanners which don't
+   * send ENTER at the end.
+   */
+  const scheduleIdleSubmit = useCallback(() => {
+    window.clearTimeout(idleTimerRef.current);
 
-      if (event.ctrlKey || event.altKey || event.metaKey) {
-        return;
+    idleTimerRef.current = window.setTimeout(() => {
+      const code = normalizeBarcode(bufferRef.current);
+
+      if (code.length >= MIN_BARCODE_LENGTH) {
+        flushBuffer();
       }
+    }, IDLE_SUBMIT_MS);
+  }, [flushBuffer]);
 
+  /*
+   * Add character to scanner buffer.
+   */
+  const addToBuffer = useCallback((character, now) => {
+    const gap = now - lastKeyAtRef.current;
+
+    lastKeyAtRef.current = now;
+
+    /*
+     * If scanner stopped for too long,
+     * start a new barcode.
+     */
+    if (gap > BUFFER_RESET_MS) {
+      bufferRef.current = '';
+    }
+
+    bufferRef.current = (
+      bufferRef.current + character
+    ).slice(0, MAX_BARCODE_LENGTH);
+
+    return gap;
+  }, []);
+
+  /*
+   * KEYBOARD / BARCODE SCANNER
+   *
+   * IMPORTANT:
+   * If captureGlobalScans is false,
+   * we DO NOT install a global keyboard listener.
+   *
+   * This prevents Product / Order navigation
+   * from being affected.
+   */
+  useEffect(() => {
+    if (disabled) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
       const target = event.target;
-      const isOurInput = target === inputRef.current;
+
+      const isOurInput =
+        target === inputRef.current;
 
       /*
-       * ENTER / TAB
-       * Most USB barcode scanners send ENTER after the barcode.
+       * ------------------------------------------------
+       * OUR BARCODE INPUT
+       * ------------------------------------------------
        */
-      if (event.key === 'Enter' || event.key === 'Tab') {
-        if (isOurInput || captureGlobalScans) {
-          const barcode = normalizeBarcode(
-            bufferRef.current || inputRef.current?.value || ''
+      if (isOurInput) {
+        /*
+         * ENTER / TAB
+         */
+        if (isTerminator(event.key)) {
+          const value = normalizeBarcode(
+            inputRef.current?.value || ''
           );
 
-          if (barcode.length >= MIN_BARCODE_LENGTH) {
-            event.preventDefault();
-            event.stopPropagation();
+          const buffered = normalizeBarcode(
+            bufferRef.current
+          );
 
-            window.clearTimeout(timerRef.current);
-            bufferRef.current = '';
+          const code =
+            buffered.length >= MIN_BARCODE_LENGTH
+              ? buffered
+              : value;
 
-            processBarcode(barcode);
+          event.preventDefault();
+          event.stopPropagation();
+
+          window.clearTimeout(idleTimerRef.current);
+
+          bufferRef.current = '';
+
+          if (code.length >= MIN_BARCODE_LENGTH) {
+            lookupRef.current?.(code);
           }
+
+          return;
+        }
+
+        /*
+         * ESCAPE
+         */
+        if (event.key === 'Escape') {
+          event.preventDefault();
+
+          bufferRef.current = '';
+
+          window.clearTimeout(idleTimerRef.current);
+
+          setFieldValue('');
+
+          return;
+        }
+
+        /*
+         * BACKSPACE
+         */
+        if (event.key === 'Backspace') {
+          event.preventDefault();
+
+          bufferRef.current =
+            bufferRef.current.slice(0, -1);
+
+          setFieldValue(bufferRef.current);
+
+          window.clearTimeout(idleTimerRef.current);
+
+          return;
+        }
+
+        /*
+         * Ignore Shift / Arrow / F keys etc.
+         */
+        if (!isBarcodeChar(event.key)) {
+          return;
+        }
+
+        /*
+         * Scanner is typing into our barcode input.
+         */
+        const now = Date.now();
+
+        const gap = addToBuffer(
+          event.key,
+          now
+        );
+
+        /*
+         * Prevent duplicate browser input.
+         */
+        event.preventDefault();
+
+        setFieldValue(bufferRef.current);
+
+        /*
+         * If characters are arriving quickly,
+         * this is most likely a scanner.
+         */
+        if (
+          gap <= SCANNER_CHAR_GAP_MS &&
+          bufferRef.current.length >= MIN_BARCODE_LENGTH
+        ) {
+          scheduleIdleSubmit();
         }
 
         return;
       }
 
       /*
-       * ESCAPE
-       */
-      if (event.key === 'Escape' && isOurInput) {
-        event.preventDefault();
-
-        window.clearTimeout(timerRef.current);
-        bufferRef.current = '';
-        setInputValue('');
-
-        return;
-      }
-
-      /*
-       * BACKSPACE
-       */
-      if (event.key === 'Backspace' && isOurInput) {
-        return;
-      }
-
-      /*
-       * Ignore non printable keys.
-       */
-      if (!event.key || event.key.length !== 1) {
-        return;
-      }
-
-      /*
-       * Only accept letters and numbers.
-       * This matches the barcode validation used by your backend.
-       */
-      if (!/^[a-zA-Z0-9]$/.test(event.key)) {
-        return;
-      }
-
-      /*
-       * If this is our input, let the browser put the character
-       * into the input normally.
-       */
-      if (isOurInput) {
-        window.clearTimeout(timerRef.current);
-
-        timerRef.current = window.setTimeout(() => {
-          const value = normalizeBarcode(inputRef.current?.value || '');
-
-          if (value.length >= MIN_BARCODE_LENGTH) {
-            processBarcode(value);
-          }
-        }, SCAN_TIMEOUT);
-
-        return;
-      }
-
-      /*
+       * ------------------------------------------------
        * GLOBAL SCANNER MODE
+       * ------------------------------------------------
        *
-       * USB/Bluetooth HID scanner behaves like a keyboard.
-       * We collect its characters here.
+       * Only enabled on Create Order / POS scanner.
        */
       if (!captureGlobalScans) {
         return;
       }
 
+      /*
+       * Never interfere with normal typing.
+       */
+      if (event.ctrlKey || event.altKey || event.metaKey) {
+        return;
+      }
+
+      /*
+       * If user is typing in another field,
+       * don't steal the characters.
+       */
+      if (isEditableTarget(target)) {
+        return;
+      }
+
+      /*
+       * ENTER
+       */
+      if (isTerminator(event.key)) {
+        const buffered = normalizeBarcode(
+          bufferRef.current
+        );
+
+        const timeSinceLastKey =
+          Date.now() - lastKeyAtRef.current;
+
+        if (
+          buffered.length >= MIN_BARCODE_LENGTH &&
+          timeSinceLastKey <= BUFFER_RESET_MS
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+
+          window.clearTimeout(idleTimerRef.current);
+
+          bufferRef.current = '';
+
+          lookupRef.current?.(buffered);
+        } else {
+          bufferRef.current = '';
+        }
+
+        return;
+      }
+
+      /*
+       * Ignore non-barcode keys.
+       */
+      if (!isBarcodeChar(event.key)) {
+        return;
+      }
+
+      const now = Date.now();
+
+      const gap = addToBuffer(
+        event.key,
+        now
+      );
+
+      /*
+       * Global scanner only accepts
+       * fast keyboard bursts.
+       */
+      if (
+        gap > SCANNER_CHAR_GAP_MS &&
+        bufferRef.current.length <= 1
+      ) {
+        bufferRef.current = event.key;
+      }
+
+      /*
+       * Prevent scanner characters from
+       * going into the current page.
+       */
       event.preventDefault();
       event.stopPropagation();
 
-      bufferRef.current = `${bufferRef.current}${event.key}`.slice(
-        0,
-        MAX_BARCODE_LENGTH
-      );
+      /*
+       * Show scanned barcode in our input.
+       */
+      setFieldValue(bufferRef.current);
 
-      window.clearTimeout(timerRef.current);
-
-      timerRef.current = window.setTimeout(() => {
-        submitBuffer();
-      }, SCAN_TIMEOUT);
-
+      /*
+       * Make sure scanner input remains ready.
+       */
       inputRef.current?.focus();
-    },
-    [
-      captureGlobalScans,
-      disabled,
-      inputRef,
-      processBarcode,
-      setInputValue,
-      submitBuffer,
-    ]
-  );
 
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown, true);
+      if (
+        bufferRef.current.length >= MIN_BARCODE_LENGTH
+      ) {
+        scheduleIdleSubmit();
+      }
+    };
+
+    /*
+     * Capture phase.
+     */
+    window.addEventListener(
+      'keydown',
+      handleKeyDown,
+      true
+    );
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-      window.clearTimeout(timerRef.current);
-    };
-  }, [handleKeyDown]);
+      window.removeEventListener(
+        'keydown',
+        handleKeyDown,
+        true
+      );
 
+      window.clearTimeout(
+        idleTimerRef.current
+      );
+
+      window.clearTimeout(
+        statusTimerRef.current
+      );
+    };
+  }, [
+    captureGlobalScans,
+    disabled,
+    inputRef,
+    addToBuffer,
+    scheduleIdleSubmit,
+    setFieldValue,
+  ]);
+
+  /*
+   * Autofocus only when component is mounted.
+   */
   useEffect(() => {
-    if (autoFocus && !disabled) {
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-      });
+    if (!autoFocus || disabled) {
+      return undefined;
     }
-  }, [autoFocus, disabled, inputRef]);
+
+    const timer = window.setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    autoFocus,
+    disabled,
+    inputRef,
+  ]);
+
+  /*
+   * Component cleanup.
+   */
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(
+        idleTimerRef.current
+      );
+
+      window.clearTimeout(
+        statusTimerRef.current
+      );
+
+      bufferRef.current = '';
+      queueRef.current = [];
+    };
+  }, []);
 
   return (
     <div
@@ -629,6 +949,7 @@ export default function BarcodeScanInput({
         autoCorrect="off"
         spellCheck={false}
         disabled={disabled}
+        defaultValue=""
         placeholder={placeholder}
         className={`input-field pl-10 pr-10 barcode-ready ${inputClassName}`}
         aria-label="Scan barcode"
@@ -639,7 +960,9 @@ export default function BarcodeScanInput({
           const barcode =
             event.clipboardData?.getData('text') || '';
 
-          processBarcode(barcode);
+          if (barcode) {
+            lookupRef.current?.(barcode);
+          }
         }}
       />
 
