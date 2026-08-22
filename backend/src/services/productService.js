@@ -109,8 +109,13 @@ async function findByBarcode(barcode) {
   if (!isValidBarcode(code)) {
     throw new AppError('Invalid barcode format', 400);
   }
-  // Exact equality uses idx_products_barcode / UNIQUE(barcode). Do not search by name.
-  const res = await query('SELECT * FROM products WHERE barcode = $1', [code]);
+  const res = await query(
+    `SELECT * FROM products
+     WHERE barcode = $1
+        OR UPPER(TRIM(barcode)) = $1
+     LIMIT 1`,
+    [code]
+  );
   if (!res.rows[0]) {
     throw new AppError('Product Not Found', 404);
   }

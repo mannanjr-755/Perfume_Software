@@ -19,6 +19,9 @@ function toItem(product) {
 
 assert(normalizeBarcode('0123456789012') === '0123456789012', 'leading zeros must be kept');
 assert(normalizeBarcode(' 6291234567890\n') === '6291234567890', 'whitespace must be stripped');
+assert(normalizeBarcode('8901000000028\r') === '8901000000028', 'CR suffix must be stripped');
+assert(normalizeBarcode('8901000000028\t') === '8901000000028', 'Tab suffix must be stripped');
+assert(normalizeBarcode(']C18901000000028') === '8901000000028', 'AIM prefix must be stripped');
 assert(isValidBarcode('0123456789012') === true, 'numeric barcode with leading zero is valid');
 assert(isValidBarcode('12') === false, 'too-short barcode is invalid');
 

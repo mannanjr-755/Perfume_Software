@@ -56,7 +56,9 @@ export async function uploadProductImage(file) {
 }
 
 export async function fetchProductByBarcode(barcode) {
-  const { data } = await api.get(`/products/barcode/${encodeURIComponent(barcode)}`);
+  const { data } = await api.get('/products/by-barcode', {
+    params: { code: barcode },
+  });
   return data;
 }
 

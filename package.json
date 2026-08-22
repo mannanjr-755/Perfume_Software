@@ -14,10 +14,23 @@
     "install:all": "npm install --prefix backend && npm install --prefix frontend && npm install",
     "db:seed": "npm run db:seed --prefix backend",
     "build": "npm run build --prefix frontend",
-    "ports:free": "node scripts/free-ports.js"
+    "ports:free": "node scripts/free-ports.js",
+    "main": "electron/main.js"
   },
+  "build": {
+  "appId": "com.lexcore.mysoftware",
+  "productName": "My Software",
+  "directories": {
+    "output": "dist"
+  },
+  "win": {
+    "target": "nsis"
+  }
+},
   "devDependencies": {
-    "concurrently": "^9.2.1",
+    "concurrently": "^9.2.4",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "wait-on": "^8.0.5"
   }
 }
