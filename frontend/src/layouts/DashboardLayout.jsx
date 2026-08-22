@@ -22,10 +22,10 @@ import BrandLogo from '../components/ui/BrandLogo.jsx';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: FiGrid, end: true },
-  { to: '/dashboard/orders', label: 'Orders', icon: FiShoppingCart },
   { to: '/dashboard/products', label: 'Products', icon: FiPackage },
   { to: '/dashboard/categories', label: 'Categories', icon: FiTag },
   { to: '/dashboard/brands', label: 'Brands', icon: FiAward },
+  { to: '/dashboard/orders', label: 'Orders', icon: FiShoppingCart },
   { to: '/dashboard/customers', label: 'Customers', icon: FiUsers },
   { to: '/dashboard/reports', label: 'Sales & Reports', icon: FiBarChart2 },
   { to: '/dashboard/notifications', label: 'Notifications', icon: FiBell },
