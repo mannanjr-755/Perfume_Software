@@ -23,6 +23,15 @@ const brandController = createCrudController(brandService, 'brands');
 
 router.get('/products', productController.list);
 
+router.get('/products/by-barcode', async (req, res, next) => {
+  try {
+    const product = await productService.findByBarcode(req.query.code || req.query.barcode);
+    return success(res, 'Product found by barcode', product);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/products/barcode/:barcode', async (req, res, next) => {
   try {
     const product = await productService.findByBarcode(req.params.barcode);
