@@ -405,7 +405,7 @@ function ScannerPanel({ onOrderCreated }) {
           <p className="mt-1 text-sm panel-title">{statusText}</p>
           <p className="mt-2 flex items-center gap-2 text-xs panel-muted">
             <LuKeyboard size={16} />
-            Enter or Tab after a scan is handled automatically. Repeat scans increase quantity.
+            Scanner works as a keyboard — scan anywhere on this page; products are added to the cart below.
           </p>
         </div>
 

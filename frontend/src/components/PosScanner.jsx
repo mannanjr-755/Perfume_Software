@@ -674,6 +674,7 @@ export default function PosScanner({
     useState(false);
 
   const inputRef = useRef(null);
+  const sectionRef = useRef(null);
   const cartRef = useRef([]);
   const noticeTimerRef = useRef(null);
 
@@ -763,6 +764,36 @@ export default function PosScanner({
     loadProducts,
     focusInput,
   ]);
+
+  /*
+   * Keep the barcode field ready unless the user is typing
+   * in another control inside this POS section (checkout, manual add).
+   */
+  useEffect(() => {
+    const refocusScanField = () => {
+      if (completing) return;
+
+      const active = document.activeElement;
+      if (!active || active === inputRef.current) return;
+      if (active.dataset?.barcodeScan === 'true') return;
+
+      if (sectionRef.current?.contains(active)) {
+        const tag = active.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      }
+
+      focusInput();
+    };
+
+    const onPointerDown = () => {
+      window.setTimeout(refocusScanField, 0);
+    };
+
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [completing, focusInput]);
 
   /*
    * Load tax settings.
@@ -1240,7 +1271,7 @@ export default function PosScanner({
         : '';
 
   return (
-    <section className="card-surface overflow-hidden">
+    <section ref={sectionRef} className="card-surface overflow-hidden">
 
       {/* HEADER */}
       <div className="border-b divider-border px-4 py-3.5 sm:px-5">
