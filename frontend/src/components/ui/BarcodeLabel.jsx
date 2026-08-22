@@ -12,13 +12,16 @@ export default function BarcodeLabel({
 
   useEffect(() => {
     if (!svgRef.current || !value) return;
+    const text = String(value);
+    const isEan13 = /^[0-9]{13}$/.test(text)
+      && text.split('').reduce((sum, d, i) => sum + Number(d) * (i % 2 ? 3 : 1), 0) % 10 === 0;
     try {
-      JsBarcode(svgRef.current, String(value), {
-        format: 'CODE128',
+      JsBarcode(svgRef.current, text, {
+        format: isEan13 ? 'EAN13' : 'CODE128',
         width,
         height,
         displayValue,
-        margin: 4,
+        margin: Math.ceil(width * 11),
         fontOptions: 'bold',
         background: '#ffffff',
       });

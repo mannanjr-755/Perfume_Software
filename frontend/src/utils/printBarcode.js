@@ -11,13 +11,16 @@ function escapeHtml(value) {
 
 function renderBarcodeDataUrl(value, { width = 2, height = 90, displayValue = true } = {}) {
   const canvas = document.createElement('canvas');
+  const text = String(value);
+  const isEan13 = /^[0-9]{13}$/.test(text)
+    && text.split('').reduce((sum, d, i) => sum + Number(d) * (i % 2 ? 3 : 1), 0) % 10 === 0;
   try {
-    JsBarcode(canvas, String(value), {
-      format: 'CODE128',
+    JsBarcode(canvas, text, {
+      format: isEan13 ? 'EAN13' : 'CODE128',
       width,
       height,
       displayValue,
-      margin: 10,
+      margin: Math.ceil(width * 11),
     });
     return canvas.toDataURL('image/png');
   } catch {

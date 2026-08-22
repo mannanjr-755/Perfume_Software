@@ -305,7 +305,7 @@ export default function ResourceCrudPage({
               </div>
               <div className="min-w-0 flex-1">
                 <p className="break-all font-mono text-sm font-semibold panel-title">{form[field.name]}</p>
-                <p className="text-xs panel-muted">Code 128 — scanned or generated barcode</p>
+                <p className="text-xs panel-muted">EAN-13 / Code 128 — scanned or generated barcode</p>
               </div>
               <button
                 type="button"
