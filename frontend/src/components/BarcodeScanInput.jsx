@@ -316,6 +316,7 @@ import { fetchProductByBarcode } from '../services/resourceService.js';
 import { getErrorMessage } from '../services/api.js';
 import { normalizeBarcode } from '../utils/barcode.js';
 import { toastError } from '../utils/toast.js';
+import { publishBarcodeScan } from '../utils/scanner.js';
 
 const SCANNER_CHAR_GAP_MS = 100;
 const BUFFER_RESET_MS = 500;
@@ -440,6 +441,7 @@ export default function BarcodeScanInput({
         /*
          * Send scanned barcode to parent.
          */
+        publishBarcodeScan(code);
         onCode?.(code);
 
         /*

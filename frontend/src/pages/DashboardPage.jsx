@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { LuBluetooth, LuKeyboard, LuScanBarcode } from 'react-icons/lu';
 import {
   FiPackage,
   FiShoppingBag,
@@ -27,6 +28,8 @@ import ProductImage from '../components/ui/ProductImage.jsx';
 import { fetchDashboardStats } from '../services/resourceService.js';
 import { getErrorMessage } from '../services/api.js';
 import { formatMoney } from '../utils/currency.js';
+import BarcodeScanInput from '../components/BarcodeScanInput.jsx';
+import { onBarcodeScan, readLastBarcodeScan } from '../utils/scanner.js';
 
 const STATUS_COLORS = {
   pending: '#f59e0b',
@@ -344,6 +347,93 @@ function SkeletonCard({ title, rows }) {
   );
 }
 
+function ScannerPanel() {
+  const [lastScan, setLastScan] = useState(() => readLastBarcodeScan());
+  const [bluetoothStatus, setBluetoothStatus] = useState('idle');
+  const [bluetoothName, setBluetoothName] = useState('');
+
+  useEffect(() => onBarcodeScan(setLastScan), []);
+
+  const pairBluetoothScanner = async () => {
+    if (!navigator.bluetooth) {
+      setBluetoothStatus('unsupported');
+      return;
+    }
+
+    setBluetoothStatus('connecting');
+    try {
+      const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
+      setBluetoothName(device.name || 'Netum scanner');
+      setBluetoothStatus('connected');
+    } catch (error) {
+      setBluetoothStatus(error?.name === 'NotFoundError' ? 'idle' : 'error');
+    }
+  };
+
+  const statusText = {
+    idle: 'Pair from here when the browser supports Bluetooth devices.',
+    connecting: 'Choose the scanner in the browser pairing dialog.',
+    connected: `${bluetoothName} selected. Keep it in keyboard HID mode to scan.`,
+    unsupported: 'This browser cannot pair Bluetooth devices. Pair the scanner in Windows Bluetooth settings; it will work as a keyboard.',
+    error: 'Pairing was not completed. The scanner may be HID-only; use Windows Bluetooth settings, then scan here.',
+  }[bluetoothStatus];
+
+  return (
+    <section className="card-surface p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <LuScanBarcode size={20} className="text-[var(--primary)]" />
+            <h2 className="text-base font-semibold panel-title">Barcode Scanner</h2>
+          </div>
+          <p className="mt-1 text-sm panel-muted">Netum HW L98 N20471000047</p>
+        </div>
+        <button
+          type="button"
+          onClick={pairBluetoothScanner}
+          disabled={bluetoothStatus === 'connecting'}
+          className="btn-secondary inline-flex items-center gap-2"
+        >
+          <LuBluetooth size={17} />
+          {bluetoothStatus === 'connecting' ? 'Pairing...' : 'Pair Bluetooth'}
+        </button>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <BarcodeScanInput
+          mode="value"
+          captureGlobalScans
+          autoFocus={false}
+          keepValue
+          notifyErrors={false}
+          onCode={(barcode) => setLastScan({ barcode, scannedAt: new Date().toISOString() })}
+          placeholder="Scan a barcode here or use the paired scanner"
+          inputClassName="h-11"
+        />
+        <div className="flex shrink-0 items-center gap-2 text-xs panel-muted">
+          <LuKeyboard size={16} />
+          <span>Keyboard mode ready</span>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-lg border divider-border bg-[var(--surface-soft)] px-4 py-3">
+        <p className="text-xs panel-muted">Bluetooth</p>
+        <p className="mt-1 text-sm panel-title">{statusText}</p>
+      </div>
+
+      {lastScan ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t divider-border pt-4">
+          <span className="text-xs panel-muted">Last scanned barcode</span>
+          <span className="font-mono text-lg font-semibold panel-title">{lastScan.barcode}</span>
+          <span className="text-xs panel-muted">{new Date(lastScan.scannedAt).toLocaleTimeString()}</span>
+        </div>
+      ) : (
+        <p className="mt-4 border-t divider-border pt-4 text-sm panel-muted">No barcode scanned yet.</p>
+      )}
+    </section>
+  );
+}
+
 export default function DashboardPage() {
   const { isDark } = useTheme();
   const [range, setRange] = useState('30d');
@@ -419,6 +509,8 @@ export default function DashboardPage() {
         </div>
       ) : (
         <>
+          <ScannerPanel />
+
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             {statConfig.map((item) => {
               const raw = stats[item.key];
