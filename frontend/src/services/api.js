@@ -9,8 +9,25 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+api.interceptors.request.use((config) => {
+  console.log('[api.request]', {
+    method: config.method?.toUpperCase(),
+    url: config.url,
+    params: config.params,
+    data: config.data,
+  });
+  return config;
+}, (error) => Promise.reject(error));
+
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log('[api.response]', {
+      status: response.status,
+      url: response.config?.url,
+      data: response.data,
+    });
+    return response;
+  },
   (error) => {
     const status = error.response?.status;
     const message =

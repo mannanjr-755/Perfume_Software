@@ -759,12 +759,15 @@ export default function OrdersCrudPage({
 
   const [catalogProducts, setCatalogProducts] =
     useState([]);
+  const [catalogProductsLoading, setCatalogProductsLoading] =
+    useState(false);
 
   const [selectedProductId, setSelectedProductId] =
     useState('');
 
   const [saving, setSaving] = useState(false);
 
+  const orderBarcodeInputRef = useRef(null);
   const loadRef = useRef(null);
 
   const entityName = itemLabel || title;
@@ -860,6 +863,7 @@ export default function OrdersCrudPage({
     }
 
     let active = true;
+    setCatalogProductsLoading(true);
 
     const loadProducts = async () => {
       try {
@@ -883,6 +887,10 @@ export default function OrdersCrudPage({
       } catch {
         if (active) {
           setCatalogProducts([]);
+        }
+      } finally {
+        if (active) {
+          setCatalogProductsLoading(false);
         }
       }
     };
@@ -917,6 +925,10 @@ export default function OrdersCrudPage({
     setSelectedProductId('');
     setForm(initial);
     setModalOpen(true);
+
+    requestAnimationFrame(() => {
+      orderBarcodeInputRef.current?.focus({ preventScroll: true });
+    });
   };
 
   /*
@@ -947,6 +959,10 @@ export default function OrdersCrudPage({
     setSelectedProductId('');
     setForm(initial);
     setModalOpen(true);
+
+    requestAnimationFrame(() => {
+      orderBarcodeInputRef.current?.focus({ preventScroll: true });
+    });
   };
 
   const closeModal = () => {
@@ -1351,6 +1367,9 @@ export default function OrdersCrudPage({
             'Product not found',
             'No product was returned for this barcode.'
           );
+          requestAnimationFrame(() => {
+            orderBarcodeInputRef.current?.focus({ preventScroll: true });
+          });
           return;
         }
 
@@ -1418,6 +1437,10 @@ export default function OrdersCrudPage({
               ...current,
               [field.name]:
                 result.items,
+              subtotal:
+                itemsTotal(
+                  result.items
+                ),
               total:
                 itemsTotal(
                   result.items
@@ -1430,11 +1453,12 @@ export default function OrdersCrudPage({
       return (
         <div className="space-y-2">
           <BarcodeScanInput
+            inputRef={orderBarcodeInputRef}
             onProductFound={
               addProductFromScan
             }
             placeholder="Scan barcode to add product…"
-            autoFocus={false}
+            autoFocus={true}
             captureGlobalScans
           />
 
@@ -1492,7 +1516,11 @@ export default function OrdersCrudPage({
             )}
           </select>
 
-          {!catalogProducts.length ? (
+          {catalogProductsLoading ? (
+            <p className="text-xs panel-muted">
+              Loading products...
+            </p>
+          ) : !catalogProducts.length ? (
             <p className="text-xs panel-muted">
               No products found.
               Add products first

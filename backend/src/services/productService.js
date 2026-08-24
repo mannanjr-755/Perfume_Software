@@ -104,11 +104,20 @@ async function update(id, data) {
 }
 
 async function findByBarcode(barcode) {
-  const code = normalizeBarcode(barcode);
+  const rawBarcode = String(barcode ?? '');
+  const code = normalizeBarcode(rawBarcode);
+
+  console.log('[barcode:lookup:backend:start]', {
+    rawBarcode,
+    normalizedBarcode: code,
+  });
+
   if (!code) throw new AppError('Barcode cannot be empty', 400);
   if (!isValidBarcode(code)) {
+    console.warn('[barcode:lookup:backend:invalid]', { rawBarcode, normalizedBarcode: code });
     throw new AppError('Invalid barcode format', 400);
   }
+
   const res = await query(
     `SELECT * FROM products
      WHERE barcode = $1
@@ -116,10 +125,32 @@ async function findByBarcode(barcode) {
      LIMIT 1`,
     [code]
   );
+
   if (!res.rows[0]) {
+    const sampleRows = await query(
+      'SELECT id, barcode, name FROM products WHERE barcode IS NOT NULL ORDER BY id DESC LIMIT 20'
+    );
+    console.warn('[barcode:lookup:backend:no-match]', {
+      scannedBarcode: code,
+      sampleRows: sampleRows.rows.map((row) => ({
+        id: row.id,
+        barcode: row.barcode,
+        name: row.name,
+      })),
+    });
     throw new AppError('Product Not Found', 404);
   }
-  return rowToDoc(res.rows[0]);
+
+  const match = res.rows[0];
+  console.log('[barcode:lookup:backend:match]', {
+    scannedBarcode: code,
+    dbBarcode: match.barcode,
+    exactMatch: match.barcode === code,
+    productId: match.id,
+    productName: match.name,
+  });
+
+  return rowToDoc(match);
 }
 
 async function nextBarcode() {

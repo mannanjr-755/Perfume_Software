@@ -1,5 +1,5 @@
 export function upsertOrderItem(items, product, toItem) {
-  const productId = product._id ?? product.productId;
+  const productId = product._id ?? product.id ?? product.productId;
   const stock = Number(product.stock) || 0;
   const name = product.name || product.productName || 'Product';
 
@@ -14,10 +14,14 @@ export function upsertOrderItem(items, product, toItem) {
     return { ok: false, reason: 'out_of_stock', name };
   }
 
-  const index = items.findIndex((item) => String(item.productId) === String(productId));
+  const index = items.findIndex((item) => {
+    const existingId = item.productId ?? item._id ?? item.id;
+    return String(existingId) === String(productId);
+  });
+
   if (index >= 0) {
     const existing = items[index];
-    const nextQty = existing.quantity + 1;
+    const nextQty = Number(existing.quantity || 0) + 1;
     if (nextQty > stock) {
       return { ok: false, reason: 'stock_limit', name, stock };
     }

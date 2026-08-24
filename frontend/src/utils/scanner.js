@@ -2,6 +2,36 @@ import { normalizeBarcode } from './barcode.js';
 
 const LAST_SCAN_KEY = 'perfume-last-barcode-scan';
 const SCAN_EVENT = 'perfume:barcode-scan';
+const DEBUG_EVENT = 'perfume:barcode-debug';
+
+export function logBarcodeDebug(eventName, payload = {}) {
+  const entry = {
+    eventName,
+    timestamp: new Date().toISOString(),
+    ...payload,
+  };
+
+  console.log(`[barcode:${eventName}]`, payload);
+
+  try {
+    const existing = JSON.parse(sessionStorage.getItem('perfume-barcode-debug') || '[]');
+    const next = [...existing, entry].slice(-80);
+    sessionStorage.setItem('perfume-barcode-debug', JSON.stringify(next));
+  } catch {
+    // storage unavailable
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(DEBUG_EVENT, { detail: entry }));
+    window.__barcodeDebug = {
+      ...(window.__barcodeDebug || {}),
+      lastEvent: entry,
+      lastBarcode: payload.barcode || payload.code || window.__barcodeDebug?.lastBarcode || null,
+      lastApiRequest: payload.apiRequest || window.__barcodeDebug?.lastApiRequest || null,
+      lastLookupResult: payload.lookupResult || window.__barcodeDebug?.lastLookupResult || null,
+    };
+  }
+}
 
 /** USB ~5–20ms/char; Bluetooth HID wedges (Netum HW-L98) ~30–200ms/char. */
 export const SCANNER_CHAR_GAP_MS = 350;
@@ -21,6 +51,8 @@ export function publishBarcodeScan(barcode) {
     barcode,
     scannedAt: new Date().toISOString(),
   };
+
+  logBarcodeDebug('scan-published', { barcode, scannedAt: scan.scannedAt });
 
   try {
     localStorage.setItem(LAST_SCAN_KEY, JSON.stringify(scan));
@@ -144,22 +176,41 @@ function onGlobalWedgeKeyDown(event) {
   if (target?.dataset?.barcodeScan === 'true') return;
 
   const now = Date.now();
+  const key = event.key ?? '';
+  const code = event.code ?? '';
+  const character = charFromKeyboardEvent(event);
+
+  logBarcodeDebug('keyboard-event', {
+    key,
+    code,
+    char: character || null,
+    targetTag: target?.tagName || null,
+    targetType: target?.type || null,
+    buffer: wedgeBuffer,
+  });
 
   if (isTerminatorKey(event.key, event.code)) {
-    const code = normalizeBarcode(wedgeBuffer);
+    const finalCode = normalizeBarcode(wedgeBuffer);
     const recent = now - wedgeLastKeyAt <= BUFFER_RESET_MS;
+
+    logBarcodeDebug('terminator-key', {
+      key,
+      code,
+      buffer: wedgeBuffer,
+      finalCode,
+      recent,
+    });
 
     resetWedgeBuffer();
 
-    if (code.length >= MIN_BARCODE_LENGTH && recent) {
+    if (finalCode.length >= MIN_BARCODE_LENGTH && recent) {
       event.preventDefault();
       event.stopPropagation();
-      dispatchWedge(code);
+      dispatchWedge(finalCode);
     }
     return;
   }
 
-  const character = charFromKeyboardEvent(event);
   if (!character) return;
 
   const gap = now - wedgeLastKeyAt;
@@ -188,6 +239,11 @@ function onGlobalWedgeKeyDown(event) {
   }
 
   if (wedgeBuffer.length >= MIN_BARCODE_LENGTH) {
+    logBarcodeDebug('scanner-buffer-ready', {
+      buffer: wedgeBuffer,
+      length: wedgeBuffer.length,
+      gap,
+    });
     scheduleWedgeIdleSubmit();
   }
 }

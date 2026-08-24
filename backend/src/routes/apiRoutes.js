@@ -25,18 +25,57 @@ router.get('/products', productController.list);
 
 router.get('/products/by-barcode', async (req, res, next) => {
   try {
-    const product = await productService.findByBarcode(req.query.code || req.query.barcode);
+    const rawBarcode = req.query.code ?? req.query.barcode ?? '';
+    console.log('[api:barcode-request]', {
+      route: '/products/by-barcode',
+      rawBarcode,
+      query: req.query,
+    });
+
+    const product = await productService.findByBarcode(rawBarcode);
+    console.log('[api:barcode-response]', {
+      route: '/products/by-barcode',
+      rawBarcode,
+      productId: product?._id || product?.id || null,
+      productName: product?.name || null,
+      barcode: product?.barcode || null,
+    });
     return success(res, 'Product found by barcode', product);
   } catch (error) {
+    console.error('[api:barcode-error]', {
+      route: '/products/by-barcode',
+      rawBarcode: req.query.code ?? req.query.barcode ?? '',
+      message: error?.message,
+      status: error?.status,
+    });
     next(error);
   }
 });
 
 router.get('/products/barcode/:barcode', async (req, res, next) => {
   try {
-    const product = await productService.findByBarcode(req.params.barcode);
+    const rawBarcode = req.params.barcode ?? '';
+    console.log('[api:barcode-request]', {
+      route: '/products/barcode/:barcode',
+      rawBarcode,
+    });
+
+    const product = await productService.findByBarcode(rawBarcode);
+    console.log('[api:barcode-response]', {
+      route: '/products/barcode/:barcode',
+      rawBarcode,
+      productId: product?._id || product?.id || null,
+      productName: product?.name || null,
+      barcode: product?.barcode || null,
+    });
     return success(res, 'Product found by barcode', product);
   } catch (error) {
+    console.error('[api:barcode-error]', {
+      route: '/products/barcode/:barcode',
+      rawBarcode: req.params.barcode ?? '',
+      message: error?.message,
+      status: error?.status,
+    });
     next(error);
   }
 });

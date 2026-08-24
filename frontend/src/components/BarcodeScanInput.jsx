@@ -53,8 +53,21 @@ export default function BarcodeScanInput({
 
   const lookupBarcode = useCallback(
     async (rawCode) => {
-      const code = normalizeBarcode(String(rawCode || ''));
-      if (!code || code.length < MIN_BARCODE_LENGTH) return;
+      const rawValue = String(rawCode || '');
+      const code = normalizeBarcode(rawValue);
+
+      console.log('[barcode:lookup:start]', {
+        rawValue,
+        normalized: code,
+        length: code.length,
+        mode,
+        autoFocus,
+      });
+
+      if (!code || code.length < MIN_BARCODE_LENGTH) {
+        console.warn('[barcode:lookup:ignored]', { rawValue, normalized: code, minLength: MIN_BARCODE_LENGTH });
+        return;
+      }
 
       if (searchingRef.current) {
         if (!queueRef.current.includes(code)) queueRef.current.push(code);
@@ -74,6 +87,7 @@ export default function BarcodeScanInput({
       try {
         publishBarcodeScan(code);
         onCode?.(code);
+        console.log('[barcode:lookup:fetching]', { code });
 
         if (mode === 'value') {
           setFieldValue(code);
@@ -83,6 +97,7 @@ export default function BarcodeScanInput({
 
         const response = await fetchProductByBarcode(code);
         const product = response?.data ?? response;
+        console.log('[barcode:lookup:response]', { code, product });
 
         if (!product || (product._id == null && product.id == null && !product.name)) {
           const error = new Error('Product not found');
@@ -196,7 +211,10 @@ export default function BarcodeScanInput({
     (event) => {
       if (event.ctrlKey || event.altKey || event.metaKey) return;
 
+      console.log('[barcode:keydown]', { key: event.key, code: event.code, value: event.target?.value || '' });
+
       if (isTerminatorKey(event.key, event.code)) {
+        console.log('[barcode:terminator]', { key: event.key, code: event.code, value: inputRef.current?.value || '' });
         event.preventDefault();
         submitFieldValue();
         return;
@@ -264,7 +282,9 @@ export default function BarcodeScanInput({
         onChange={handleInputChange}
         onPaste={(event) => {
           event.preventDefault();
-          const code = normalizeBarcode(event.clipboardData?.getData('text') || '');
+          const rawText = event.clipboardData?.getData('text') || '';
+          console.log('[barcode:paste]', { rawText });
+          const code = normalizeBarcode(rawText);
           if (code.length >= MIN_BARCODE_LENGTH) lookupRef.current?.(code);
         }}
       />

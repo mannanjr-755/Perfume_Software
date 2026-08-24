@@ -10,6 +10,7 @@ import BrandsPage from './pages/BrandsPage.jsx';
 import NotificationsPage from './pages/NotificationsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
+import BarcodeDebugPage from './pages/BarcodeDebugPage.jsx';
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="settings" element={<SettingsPage />} />
             <Route path="reports" element={<ReportsPage />} />
           </Route>
+          <Route path="/debug/barcode" element={<BarcodeDebugPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
