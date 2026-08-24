@@ -6,10 +6,13 @@ import { getErrorMessage } from '../services/api.js';
 import { normalizeBarcode } from '../utils/barcode.js';
 import { toastError } from '../utils/toast.js';
 import {
+  BUFFER_RESET_MS,
   IDLE_SUBMIT_MS,
+  MAX_BARCODE_LENGTH,
   MIN_BARCODE_LENGTH,
   SCANNER_CHAR_GAP_MS,
   charFromKeyboardEvent,
+  isNodeInsideOpenModal,
   isTerminatorKey,
   publishBarcodeScan,
   registerWedgeHandler,
@@ -43,6 +46,8 @@ export default function BarcodeScanInput({
   const statusTimerRef = useRef(null);
   const queueRef = useRef([]);
   const lookupRef = useRef(null);
+  const keyBufferRef = useRef('');
+  const keyBufferAtRef = useRef(0);
 
   const setFieldValue = useCallback(
     (value) => {
@@ -51,8 +56,18 @@ export default function BarcodeScanInput({
     [inputRef]
   );
 
+  const ownsScan = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return false;
+    const modalOpen = Boolean(document.querySelector('[data-modal-open="true"]'));
+    if (modalOpen && !isNodeInsideOpenModal(el)) return false;
+    return true;
+  }, [inputRef]);
+
   const lookupBarcode = useCallback(
     async (rawCode) => {
+      if (!ownsScan()) return;
+
       const rawValue = String(rawCode || '');
       const code = normalizeBarcode(rawValue);
 
@@ -96,7 +111,17 @@ export default function BarcodeScanInput({
         }
 
         const response = await fetchProductByBarcode(code);
-        const product = response?.data ?? response;
+        const rawProduct = response?.data ?? response;
+        const product =
+          rawProduct && typeof rawProduct === 'object'
+            ? {
+                ...rawProduct,
+                _id: rawProduct._id ?? rawProduct.id,
+                id: rawProduct.id ?? rawProduct._id,
+                stock: Number(rawProduct.stock) || 0,
+                price: Number(rawProduct.price) || 0,
+              }
+            : rawProduct;
         console.log('[barcode:lookup:response]', { code, product });
 
         if (!product || (product._id == null && product.id == null && !product.name)) {
@@ -132,7 +157,7 @@ export default function BarcodeScanInput({
         if (!keepValue) setFieldValue('');
 
         requestAnimationFrame(() => {
-          if (!disabled) inputRef.current?.focus({ preventScroll: true });
+          if (!disabled && ownsScan()) inputRef.current?.focus({ preventScroll: true });
         });
 
         statusTimerRef.current = window.setTimeout(() => {
@@ -155,6 +180,7 @@ export default function BarcodeScanInput({
       onNotFound,
       onProductFound,
       onScanStateChange,
+      ownsScan,
       setFieldValue,
     ]
   );
@@ -163,7 +189,10 @@ export default function BarcodeScanInput({
 
   const submitFieldValue = useCallback(() => {
     window.clearTimeout(idleTimerRef.current);
-    const code = normalizeBarcode(inputRef.current?.value || '');
+    const fromInput = normalizeBarcode(inputRef.current?.value || '');
+    const fromBuffer = normalizeBarcode(keyBufferRef.current);
+    keyBufferRef.current = '';
+    const code = fromInput.length >= fromBuffer.length ? fromInput : fromBuffer;
     if (inputRef.current) inputRef.current.value = '';
     if (code.length >= MIN_BARCODE_LENGTH) lookupRef.current?.(code);
   }, [inputRef]);
@@ -171,7 +200,10 @@ export default function BarcodeScanInput({
   const scheduleFieldIdleSubmit = useCallback(() => {
     window.clearTimeout(idleTimerRef.current);
     idleTimerRef.current = window.setTimeout(() => {
-      const code = normalizeBarcode(inputRef.current?.value || '');
+      const fromInput = normalizeBarcode(inputRef.current?.value || '');
+      const fromBuffer = normalizeBarcode(keyBufferRef.current);
+      keyBufferRef.current = '';
+      const code = fromInput.length >= fromBuffer.length ? fromInput : fromBuffer;
       if (code.length >= MIN_BARCODE_LENGTH) {
         if (inputRef.current) inputRef.current.value = '';
         lookupRef.current?.(code);
@@ -181,11 +213,13 @@ export default function BarcodeScanInput({
 
   const handleInputChange = useCallback(
     (event) => {
+      if (!ownsScan()) return;
       const raw = event.target.value || '';
 
       if (/[\r\n\t]/.test(raw)) {
         window.clearTimeout(idleTimerRef.current);
         const code = normalizeBarcode(raw);
+        keyBufferRef.current = '';
         event.target.value = '';
         if (code.length >= MIN_BARCODE_LENGTH) lookupRef.current?.(code);
         return;
@@ -204,17 +238,26 @@ export default function BarcodeScanInput({
         window.clearTimeout(idleTimerRef.current);
       }
     },
-    [scheduleFieldIdleSubmit]
+    [ownsScan, scheduleFieldIdleSubmit]
   );
 
   const handleInputKeyDown = useCallback(
     (event) => {
       if (event.ctrlKey || event.altKey || event.metaKey) return;
+      if (!ownsScan()) return;
+
+      const character = charFromKeyboardEvent(event);
+      const now = Date.now();
+      if (character) {
+        if (now - keyBufferAtRef.current > BUFFER_RESET_MS) keyBufferRef.current = '';
+        keyBufferAtRef.current = now;
+        keyBufferRef.current = `${keyBufferRef.current}${character}`.slice(0, MAX_BARCODE_LENGTH);
+      }
 
       console.log('[barcode:keydown]', { key: event.key, code: event.code, value: event.target?.value || '' });
 
-      if (isTerminatorKey(event.key, event.code)) {
-        console.log('[barcode:terminator]', { key: event.key, code: event.code, value: inputRef.current?.value || '' });
+      if (isTerminatorKey(event.key, event.code, event.keyCode || event.which)) {
+        console.log('[barcode:terminator]', { key: event.key, code: event.code, value: inputRef.current?.value || '', buffer: keyBufferRef.current });
         event.preventDefault();
         submitFieldValue();
         return;
@@ -223,31 +266,53 @@ export default function BarcodeScanInput({
       if (event.key === 'Escape') {
         event.preventDefault();
         window.clearTimeout(idleTimerRef.current);
+        keyBufferRef.current = '';
         setFieldValue('');
       }
     },
-    [setFieldValue, submitFieldValue]
+    [ownsScan, setFieldValue, submitFieldValue]
   );
 
   useEffect(() => {
     if (!captureGlobalScans || disabled) return undefined;
 
     return registerWedgeHandler((code) => {
-      if (disabled) return false;
+      if (disabled || !ownsScan()) return false;
 
       setFieldValue(code);
       lookupRef.current?.(code);
       return true;
     });
-  }, [captureGlobalScans, disabled, setFieldValue]);
+  }, [captureGlobalScans, disabled, ownsScan, setFieldValue]);
+
+  useEffect(() => {
+    const syncFocus = () => {
+      const el = inputRef.current;
+      if (!el) return;
+      if (!ownsScan() && document.activeElement === el) el.blur();
+    };
+
+    const observer = new MutationObserver(syncFocus);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-modal-open'],
+    });
+    document.addEventListener('focusin', syncFocus, true);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('focusin', syncFocus, true);
+    };
+  }, [inputRef, ownsScan]);
 
   useEffect(() => {
     if (!autoFocus || disabled) return undefined;
     const timer = window.setTimeout(() => {
-      inputRef.current?.focus({ preventScroll: true });
+      if (ownsScan()) inputRef.current?.focus({ preventScroll: true });
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [autoFocus, disabled, inputRef]);
+  }, [autoFocus, disabled, inputRef, ownsScan]);
 
   useEffect(
     () => () => {
@@ -280,6 +345,14 @@ export default function BarcodeScanInput({
         data-barcode-scan="true"
         onKeyDown={handleInputKeyDown}
         onChange={handleInputChange}
+        onCompositionEnd={(event) => {
+          const code = normalizeBarcode(event.target?.value || '');
+          if (code.length >= MIN_BARCODE_LENGTH) {
+            event.target.value = '';
+            keyBufferRef.current = '';
+            lookupRef.current?.(code);
+          }
+        }}
         onPaste={(event) => {
           event.preventDefault();
           const rawText = event.clipboardData?.getData('text') || '';

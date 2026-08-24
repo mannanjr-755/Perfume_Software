@@ -673,6 +673,7 @@ import ProductImage from '../components/ui/ProductImage.jsx';
 import BarcodeScanInput from '../components/BarcodeScanInput.jsx';
 import { formatMoney } from '../utils/currency.js';
 import { upsertOrderItem } from '../utils/orderCart.js';
+import { barcodesMatch } from '../utils/barcode.js';
 import {
   toastSuccess,
   toastWarning,
@@ -689,7 +690,7 @@ function isFullWidth(field) {
 
 function toOrderItem(product, quantity = 1) {
   return {
-    productId: product._id || product.productId,
+    productId: product._id ?? product.id ?? product.productId,
     productName:
       product.name || product.productName || '',
     brand: product.brand || '',
@@ -698,6 +699,7 @@ function toOrderItem(product, quantity = 1) {
     image: product.image || '',
     barcode: product.barcode || '',
     size: product.size || '',
+    stock: Number(product.stock ?? 0) || 0,
     quantity: Math.max(
       1,
       Number(quantity) || 1
@@ -1373,6 +1375,14 @@ export default function OrdersCrudPage({
           return;
         }
 
+        const normalizedProduct = {
+          ...product,
+          _id: product._id ?? product.id ?? product.productId,
+          id: product.id ?? product._id ?? product.productId,
+          stock: Number(product.stock) || 0,
+          price: Number(product.price) || 0,
+        };
+
         setForm(
           (current) => {
             const currentItems =
@@ -1393,7 +1403,7 @@ export default function OrdersCrudPage({
             const result =
               upsertOrderItem(
                 currentItems,
-                product,
+                normalizedProduct,
                 (entry) =>
                   toOrderItem(
                     entry,
@@ -1407,7 +1417,7 @@ export default function OrdersCrudPage({
             if (!result.ok) {
               showProductError(
                 result,
-                product
+                normalizedProduct
               );
 
               return current;
@@ -1420,7 +1430,7 @@ export default function OrdersCrudPage({
               toastSuccess(
                 'Product added',
                 `${result.name} — ${formatMoney(
-                  product.price
+                  normalizedProduct.price
                 )}`
               );
             } else {
@@ -1457,6 +1467,22 @@ export default function OrdersCrudPage({
             onProductFound={
               addProductFromScan
             }
+            onNotFound={(code) => {
+              const match = catalogProducts.find((entry) =>
+                barcodesMatch(entry.barcode, code)
+              );
+              if (match) {
+                addProductFromScan(match);
+                return;
+              }
+              toastError(
+                'Product Not Found',
+                `Barcode:\n${code}\nThis barcode is not assigned to any product.`
+              );
+              requestAnimationFrame(() => {
+                orderBarcodeInputRef.current?.focus({ preventScroll: true });
+              });
+            }}
             placeholder="Scan barcode to add product…"
             autoFocus={true}
             captureGlobalScans
@@ -1562,6 +1588,13 @@ export default function OrdersCrudPage({
                         {[
                           item.brand,
                           item.category,
+                          item.barcode
+                            ? `Barcode ${item.barcode}`
+                            : null,
+                          item.stock != null &&
+                          item.stock !== ''
+                            ? `Stock ${item.stock}`
+                            : null,
                         ]
                           .filter(
                             Boolean

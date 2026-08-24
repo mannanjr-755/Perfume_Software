@@ -78,14 +78,41 @@ export function onBarcodeScan(listener) {
   return () => window.removeEventListener(SCAN_EVENT, handleScan);
 }
 
-export function isTerminatorKey(key, code) {
+export function getOpenModal() {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector('[data-modal-open="true"]');
+}
+
+export function isNodeInsideOpenModal(node) {
+  const modal = getOpenModal();
+  if (!modal || !node) return false;
+  return modal.contains(node);
+}
+
+/**
+ * USB HID scanners type into the focused field. A barcode input behind an
+ * open modal must not swallow the scan — the modal field should receive it.
+ */
+export function shouldFieldHandleBarcode(target) {
+  if (!target || target.dataset?.barcodeScan !== 'true') return false;
+  const modal = getOpenModal();
+  if (!modal) return true;
+  return modal.contains(target);
+}
+
+export function isTerminatorKey(key, code, keyCode) {
+  const which = Number(keyCode) || 0;
   return (
     key === 'Enter' ||
     key === 'NumpadEnter' ||
     key === 'Tab' ||
+    key === '\r' ||
+    key === '\n' ||
     code === 'Enter' ||
     code === 'NumpadEnter' ||
-    code === 'Tab'
+    code === 'Tab' ||
+    which === 13 ||
+    which === 9
   );
 }
 
@@ -173,7 +200,7 @@ function onGlobalWedgeKeyDown(event) {
   if (event.defaultPrevented) return;
 
   const target = event.target;
-  if (target?.dataset?.barcodeScan === 'true') return;
+  if (shouldFieldHandleBarcode(target)) return;
 
   const now = Date.now();
   const key = event.key ?? '';
@@ -189,7 +216,7 @@ function onGlobalWedgeKeyDown(event) {
     buffer: wedgeBuffer,
   });
 
-  if (isTerminatorKey(event.key, event.code)) {
+  if (isTerminatorKey(event.key, event.code, event.keyCode || event.which)) {
     const finalCode = normalizeBarcode(wedgeBuffer);
     const recent = now - wedgeLastKeyAt <= BUFFER_RESET_MS;
 

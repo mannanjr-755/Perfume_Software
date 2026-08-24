@@ -2,7 +2,7 @@ import { createCrudService } from './crudService.js';
 import { AppError } from '../utils/AppError.js';
 import { query } from '../config/database.js';
 import { rowToDoc } from '../db/columns.js';
-import { normalizeBarcode, isValidBarcode, generateBarcode } from '../utils/barcode.js';
+import { normalizeBarcode, isValidBarcode, generateBarcode, barcodeCandidates } from '../utils/barcode.js';
 
 const base = createCrudService('products', {
   searchFields: ['name', 'brand', 'category', 'barcode', 'sku', 'size'],
@@ -106,24 +106,33 @@ async function update(id, data) {
 async function findByBarcode(barcode) {
   const rawBarcode = String(barcode ?? '');
   const code = normalizeBarcode(rawBarcode);
+  const candidates = barcodeCandidates(rawBarcode);
+  const stripped = [...new Set(candidates.map((value) => value.replace(/^0+/, '')).filter((value) => value.length >= 4))];
 
   console.log('[barcode:lookup:backend:start]', {
     rawBarcode,
     normalizedBarcode: code,
+    candidates,
   });
 
   if (!code) throw new AppError('Barcode cannot be empty', 400);
-  if (!isValidBarcode(code)) {
+  if (!candidates.length) {
     console.warn('[barcode:lookup:backend:invalid]', { rawBarcode, normalizedBarcode: code });
     throw new AppError('Invalid barcode format', 400);
   }
 
   const res = await query(
     `SELECT * FROM products
-     WHERE barcode = $1
-        OR UPPER(TRIM(barcode)) = $1
+     WHERE barcode = ANY($1::text[])
+        OR UPPER(TRIM(barcode)) = ANY($1::text[])
+        OR regexp_replace(UPPER(TRIM(COALESCE(barcode, ''))), '[^A-Z0-9]', '', 'g') = ANY($1::text[])
+        OR regexp_replace(
+             regexp_replace(UPPER(TRIM(COALESCE(barcode, ''))), '[^A-Z0-9]', '', 'g'),
+             '^0+',
+             ''
+           ) = ANY($2::text[])
      LIMIT 1`,
-    [code]
+    [candidates, stripped.length ? stripped : ['__none__']]
   );
 
   if (!res.rows[0]) {
@@ -132,6 +141,7 @@ async function findByBarcode(barcode) {
     );
     console.warn('[barcode:lookup:backend:no-match]', {
       scannedBarcode: code,
+      candidates,
       sampleRows: sampleRows.rows.map((row) => ({
         id: row.id,
         barcode: row.barcode,

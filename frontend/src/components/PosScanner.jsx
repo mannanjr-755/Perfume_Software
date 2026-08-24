@@ -772,6 +772,7 @@ export default function PosScanner({
   useEffect(() => {
     const refocusScanField = () => {
       if (completing) return;
+      if (document.querySelector('[data-modal-open="true"]')) return;
 
       const active = document.activeElement;
       if (!active || active === inputRef.current) return;

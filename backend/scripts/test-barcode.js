@@ -1,4 +1,4 @@
-import { normalizeBarcode, isValidBarcode } from '../src/utils/barcode.js';
+import { normalizeBarcode, isValidBarcode, barcodeCandidates } from '../src/utils/barcode.js';
 import { upsertOrderItem } from '../../frontend/src/utils/orderCart.js';
 
 function assert(condition, message) {
@@ -24,6 +24,9 @@ assert(normalizeBarcode('8901000000028\t') === '8901000000028', 'Tab suffix must
 assert(normalizeBarcode(']C18901000000028') === '8901000000028', 'AIM prefix must be stripped');
 assert(isValidBarcode('0123456789012') === true, 'numeric barcode with leading zero is valid');
 assert(isValidBarcode('12') === false, 'too-short barcode is invalid');
+assert(barcodeCandidates('08901000000028').includes('8901000000028'), 'USB extra leading zero maps to stored barcode');
+assert(barcodeCandidates('012345678905').includes('0012345678905'), '12-digit UPC also tries EAN-13 padding');
+assert(barcodeCandidates('0123456789051').includes('123456789051'), 'EAN-13 with leading zero also tries UPC-A');
 
 const product = {
   _id: 1,
